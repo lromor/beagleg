@@ -341,3 +341,10 @@ of many-hour long jobs. This might be useful to display to the user.
 ![gcode-print-stats](./img/print-stats.png)
 
 [ccache]: https://ccache.samba.org/
+
+### Roadmap
+
+- [ ] Shoveller: Allow start and stop to be possible + allow asynchronous operations.
+- [ ] High performance/light Status Server
+- [ ] Change the code to be compatible with remoteproc new kernel feature.
+- [ ] Include some tests for the pru code (maybe by using a PRU virtualization)
