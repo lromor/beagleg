@@ -1294,14 +1294,14 @@ int main(int argc, char *argv[]) {
       output_file, machine_config, tool_diameter_mm, vis_options);
     GCodeMachineControl *machine_control
       = GCodeMachineControl::Create(machine_config, &motor_operations_printer,
-                                    &hardware, nullptr, msg_stream);
+                                    &hardware, nullptr, nullptr, msg_stream);
     if (!machine_control) {
       // Ups, let's do it again with logging enabled to human-readably
       // print anything that might hint what the problem is.
       Log_init("/dev/stderr");
       Log_error("Cannot initialize machine:");
       GCodeMachineControl::Create(machine_config, &motor_operations_printer,
-                                  &hardware, nullptr, stderr);
+                                  &hardware, nullptr, nullptr, stderr);
     } else {
       machine_control->SetMsgOut(NULL);
       motor_operations_printer.SetPass(ProcessingStep::Preprocess);

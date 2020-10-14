@@ -92,6 +92,7 @@ void FDMultiplexer::CallHandlers(fd_set *to_call_fd_set, int *available_fds,
 bool FDMultiplexer::SingleCycle(unsigned int timeout_ms) {
   fd_set read_fds;
   fd_set write_fds;
+  fd_set except_fds;
 
   struct timeval timeout;
   timeout.tv_sec = timeout_ms / 1000;
@@ -100,6 +101,7 @@ bool FDMultiplexer::SingleCycle(unsigned int timeout_ms) {
   int maxfd = -1;
   FD_ZERO(&read_fds);
   FD_ZERO(&write_fds);
+  FD_ZERO(&except_fds);
 
   // Readers
   for (const auto &it : read_handlers_) {
@@ -113,6 +115,9 @@ bool FDMultiplexer::SingleCycle(unsigned int timeout_ms) {
     FD_SET(it.first, &write_fds);
   }
 
+  for (auto handler : external_handlers_)
+    handler->Register(&read_fds, &write_fds, &except_fds, &maxfd);
+
   if (maxfd < 0) {
     // file descriptors only can be registred from within handlers
     // or before running the Loop(). So if no filedesctiptors are left,
@@ -121,12 +126,15 @@ bool FDMultiplexer::SingleCycle(unsigned int timeout_ms) {
     return false;
   }
 
-  int fds_ready = select(maxfd + 1, &read_fds, &write_fds, nullptr, &timeout);
+  int fds_ready = select(maxfd + 1, &read_fds, &write_fds, &except_fds, &timeout);
   if (fds_ready < 0) {
     if (!caught_signal)
       perror("select() failed");
     return false;
   }
+
+  for (auto handler : external_handlers_)
+    handler->Trigger(&read_fds, &write_fds, &except_fds);
 
   if (fds_ready == 0) {             // No FDs ready: timeout situation.
     for (auto it = idle_handlers_.begin(); it != idle_handlers_.end(); /**/) {
@@ -152,4 +160,8 @@ int FDMultiplexer::Loop() {
   disarm_signal_handler();
 
   return caught_signal ? 1 : 0;
+}
+
+void FDMultiplexer::AddExternalHandler(ExternalHandler *handler) {
+  external_handlers_.push_back(handler);
 }

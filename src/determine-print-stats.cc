@@ -139,7 +139,7 @@ bool determine_print_stats(int input_fd, const MachineControlConfig &config,
   StatsMotorOperations stats_motor_ops(result);
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &stats_motor_ops,
-                                  &hardware, nullptr, nullptr);
+                                  &hardware, nullptr, nullptr, nullptr);
   if (!machine_control)
     return false;
 

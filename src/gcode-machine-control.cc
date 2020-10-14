@@ -63,6 +63,7 @@ public:
        MotorOperations *motor_ops,
        HardwareMapping *hardware_mapping,
        Spindle *spindle,
+       StatusEventReceiver *status_receiver,
        FILE *msg_stream);
 
   // Initialize. Only if this succeeds, we have a properly initialized
@@ -137,6 +138,7 @@ private:
   MotorOperations *const motor_ops_;
   HardwareMapping *const hardware_mapping_;
   Spindle *const spindle_;
+  StatusEventReceiver *const status_receiver_;
 
   Planner *planner_ = nullptr;
   FILE *msg_stream_ = nullptr;
@@ -164,11 +166,13 @@ GCodeMachineControl::Impl::Impl(const MachineControlConfig &config,
                                 MotorOperations *motor_ops,
                                 HardwareMapping *hardware_mapping,
                                 Spindle *spindle,
+                                StatusEventReceiver *status_receiver,
                                 FILE *msg_stream)
   : cfg_(config),
     motor_ops_(motor_ops),
     hardware_mapping_(hardware_mapping),
     spindle_(spindle),
+    status_receiver_(status_receiver),
     msg_stream_(msg_stream),
     parser_(NULL),
     g0_feedrate_mm_per_sec_(-1),
@@ -821,6 +825,10 @@ bool GCodeMachineControl::Impl::coordinated_move(float feed,
   if (!planner_->Enqueue(axis, feedrate)) {
     if (check_for_estop()) return false;
   }
+
+  if (status_receiver_) {
+    status_receiver_->enqueued_line_move(feed, axis);
+  }
   return true;
 }
 
@@ -837,6 +845,10 @@ bool GCodeMachineControl::Impl::rapid_move(float feed,
   }
   if (!planner_->Enqueue(axis, given > 0 ? given : rapid_feed)) {
     if (check_for_estop()) return false;
+  }
+
+  if (status_receiver_) {
+    status_receiver_->enqueued_line_move(feed, axis);
   }
   return true;
 }
@@ -1025,15 +1037,20 @@ GCodeMachineControl* GCodeMachineControl::Create(
   MotorOperations *motor_ops,
   HardwareMapping *hardware_mapping,
   Spindle *spindle,
+  StatusEventReceiver *status_receiver,
   FILE *msg_stream)
 {
   Impl *result = new Impl(config, motor_ops,
-                          hardware_mapping, spindle, msg_stream);
+                          hardware_mapping, spindle,
+                          status_receiver, msg_stream);
   if (!result->Init()) {
     delete result;
     return NULL;
   }
-  return new GCodeMachineControl(result);
+  GCodeMachineControl *machine_control = new GCodeMachineControl(result);
+  if (status_receiver)
+    status_receiver->GCodeMachineControlCreated(machine_control);
+  return machine_control;
 }
 
 void GCodeMachineControl::GetHomePos(AxesRegister *home_pos) {

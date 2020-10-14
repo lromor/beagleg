@@ -60,7 +60,7 @@ CFLAGS+=-Wall -I. -I$(INCDIR_APP_LOADER) -I$(CAPE_INCLUDE) -D_XOPEN_SOURCE=500 $
 CXXFLAGS+=-std=c++11 $(CFLAGS) $(CONFIG_FLAGS)
 CXX?=g++
 
-LDFLAGS+=-lpthread -lm
+LDFLAGS+=-lpthread -lm -lmicrohttpd
 PRUSS_LIBS=$(LIBDIR_APP_LOADER)/libprussdrv.a
 COMMON_LIBS=common/libbeaglegbase.a gcode-parser/libgcodeparser.a
 SUBDIRS=common gcode-parser
@@ -70,9 +70,10 @@ PRU_BIN=motor-interface-pru_bin.h
 
 
 GCODE_OBJECTS=gcode-machine-control.o determine-print-stats.o \
-              generic-gpio.o pwm-timer.o config-parser.o \
-	      machine-control-config.o hardware-mapping.o \
-	      spindle-control.o planner.o adc.o
+	generic-gpio.o pwm-timer.o config-parser.o \
+	machine-control-config.o hardware-mapping.o \
+	spindle-control.o planner.o adc.o status-server.o
+
 OBJECTS=motor-operations.o sim-firmware.o sim-audio-out.o pru-motion-queue.o uio-pruss-interface.o $(GCODE_OBJECTS)
 MAIN_OBJECTS=machine-control.o gcode-print-stats.o gcode2ps.o
 TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o

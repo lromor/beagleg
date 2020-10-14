@@ -23,6 +23,7 @@
 #include <map>
 #include <functional>
 #include <list>
+#include <vector>
 
 #include <sys/select.h>
 
@@ -41,6 +42,14 @@ public:
   // Returns false if that filedescriptor is already registered.
   bool RunOnReadable(int fd, const Handler &handler);
   bool RunOnWritable(int fd, const Handler &handler);
+
+  class ExternalHandler {
+  public:
+    virtual bool Register(fd_set *read_fds, fd_set *write_fds, fd_set *except_fds, int *max_fd) = 0;
+    virtual bool Trigger(fd_set *read_fds, fd_set *write_fds, fd_set *except_fds) = 0;
+  };
+
+  void AddExternalHandler(ExternalHandler *handler);
 
   // Handler called regularly every idle_ms in case there's nothing to do.
   void RunOnIdle(const Handler &handler);
@@ -72,6 +81,8 @@ private:
   HandlerMap read_handlers_;
   HandlerMap write_handlers_;
   std::list<Handler> idle_handlers_;
+
+  std::list<ExternalHandler *> external_handlers_;
 };
 
 #endif // FD_MUX_H_

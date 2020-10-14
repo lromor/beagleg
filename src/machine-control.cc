@@ -51,6 +51,7 @@
 #include "sim-firmware.h"
 #include "sim-audio-out.h"
 #include "spindle-control.h"
+#include "status-server.h"
 
 static int usage(const char *prog, const char *msg) {
   if (msg) {
@@ -230,65 +231,6 @@ static void run_gcode_server(int listen_socket, FDMultiplexer *event_server,
     streamer->ConnectStream(connection, msg_stream);
     return true;
   });
-}
-
-// THIS IS A SAMPLE ONLY at this point. We need to come up with a proper
-// definition first what we want from a status server.
-// At this point: whenever it receives the character 'p' it prints the
-// position as json.
-static void run_status_server(const char *bind_addr, int port,
-                              FDMultiplexer *event_server,
-                              GCodeMachineControl *machine) {
-  const int listen_socket = open_server(bind_addr, port);
-  if (listen_socket < 0) return;
-  if (listen(listen_socket, 2) < 0) {
-    Log_error("listen(fd=%d) failed: %s", listen_socket, strerror(errno));
-    return;
-  }
-
-  Log_info("Starting experimental status server on port %d", port);
-
-  event_server->RunOnReadable(
-    listen_socket, [listen_socket, machine, event_server]() {
-      struct sockaddr_in client;
-      socklen_t socklen = sizeof(client);
-      int conn = accept(listen_socket, (struct sockaddr*) &client, &socklen);
-      if (conn < 0) {
-        Log_error("accept(): %s", strerror(errno));
-        return true;
-      }
-
-      event_server->RunOnReadable(conn, [conn, machine]() {
-          char query;
-          if (read(conn, &query, 1) <= 0) {
-            close(conn);
-            return false;
-          }
-          if (query == 'p') {
-            AxesRegister pos;
-            machine->GetCurrentPosition(&pos);
-            // JSON {"x_axis":fval, "y_axis":fval, "z-axis":fval, "note":"experimental"}
-            dprintf(conn, "{\"x_axis\":%.3f, \"y_axis\":%.3f, "
-                    "\"z_axis\":%.3f, \"note\":\"experimental\"}\n",
-                    pos[AXIS_X], pos[AXIS_Y], pos[AXIS_Z]);
-          }
-          if (query == 's') {
-            GCodeMachineControl::EStopState estop_status = machine->GetEStopStatus();
-	    GCodeMachineControl::HomingState home_status = machine->GetHomeStatus();
-            // JSON {"estop":"status", "homed":"status", "motors":bool}
-            dprintf(conn, "{\"estop\":\"%s\", \"homed\":\"%s\", \"motors\":%s}\n",
-                    estop_status == GCodeMachineControl::EStopState::NONE ? "none" :
-                    estop_status == GCodeMachineControl::EStopState::SOFT ? "soft" :
-                    estop_status == GCodeMachineControl::EStopState::HARD ? "hard" : "unknown",
-                    home_status == GCodeMachineControl::HomingState::NEVER_HOMED ? "no" :
-                    home_status == GCodeMachineControl::HomingState::HOMED_BUT_MOTORS_UNPOWERED ? "maybe" :
-                    home_status == GCodeMachineControl::HomingState::HOMED ? "yes" : "unknown",
-		    machine->GetMotorsEnabled() ? "true" : "false");
-          }
-          return true;
-        });
-      return true;
-    });
 }
 
 // Create an absolute filename from a path, without the file not needed
@@ -569,9 +511,19 @@ int main(int argc, char *argv[]) {
 
   MotionQueueMotorOperations motor_operations(&hardware_mapping, motion_backend);
 
+  StatusServer *status_server = NULL;
+  if (status_server_port > 0 && !has_filename) {
+    status_server =
+      StatusServer::Create(&event_server, bind_addr, status_server_port);
+    if (status_server == NULL) {
+      Log_error("Exiting. Cannot initialize status server.");
+    }
+  }
+
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &motor_operations,
                                   &hardware_mapping, spindle.get(),
+                                  status_server ? status_server->StatusEventReceiver() : NULL,
                                   stderr);
   if (machine_control == NULL) {
     Log_error("Exiting. Cannot initialize machine control.");
@@ -597,18 +549,13 @@ int main(int argc, char *argv[]) {
     run_gcode_server(listen_socket, &event_server, machine_control,
                      streamer,  bind_addr, listen_port);
   }
-
-  if (status_server_port > 0 && !has_filename) {
-    run_status_server(bind_addr, status_server_port,
-                      &event_server, machine_control);
-  }
-
   event_server.Loop();  // Run service until Ctrl-C or all sockets closed.
   Log_info("Exiting.");
 
   delete streamer;
   delete parser;
   delete machine_control;
+  delete status_server;
 
   const bool caught_signal = (ret == 1);
   if (caught_signal) {
