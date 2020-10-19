@@ -7,7 +7,7 @@
 #include <memory>
 #include <unistd.h>
 #include <microhttpd.h>
-#include <list>
+#include <set>
 #include <sstream>
 #include "common/fd-mux.h"
 #include "gcode-parser/gcode-parser.h"
@@ -75,6 +75,7 @@ public:
   const size_t size() { return size_; }
   const size_t bytes() { return size() * sizeof(T); }
   void clear() { free(data_); size_ = 0; }
+
 private:
   T *data_;
   size_t size_;
@@ -82,10 +83,12 @@ private:
 
 class MHDServer : public FDMultiplexer::ExternalHandler {
 public:
-  MHDServer(const int port) : d_(NULL), connection_(NULL) {
+  MHDServer(const int port) : d_(NULL) {
     d_ = MHD_start_daemon(
-      MHD_USE_DEBUG | MHD_ALLOW_SUSPEND_RESUME, port, NULL, NULL,
-      &AccessHandlerCallbackWrapper, (void *) this, NULL, MHD_OPTION_END);
+      MHD_USE_DEBUG, port, NULL, NULL,
+      &AccessHandlerCallbackWrapper, (void *) this,
+      MHD_OPTION_NOTIFY_CONNECTION, &NotifyConnectionCallbackWrapper, (void *) this,
+      MHD_OPTION_END);
   }
 
   virtual bool Register(fd_set *read_fds, fd_set *write_fds,
@@ -103,12 +106,9 @@ public:
   }
 
   bool SendData(const std::string &data) {
-    if (!connection_)
-      return false;
-    MHD_resume_connection(connection_);
-    data_.Update(data.c_str(), data.length());
+    for (auto ctx : connections_)
+      ctx->data_to_send.Update(data.c_str(), data.length());
 
-    // Run callbacks
     MHD_run(d_);
     return true;
   }
@@ -119,17 +119,50 @@ private:
     const char *url, const char *method, const char *version,
     const char *upload_data, size_t *upload_data_size, void **ptr) {
     MHDServer *server = (MHDServer *)cls;
-    return server->HandleAccess(
+    return server->AccessHandlerCallback(
       connection, url, method, version,
       upload_data, upload_data_size, ptr);
   }
 
-  MHD_Result HandleAccess(struct MHD_Connection *connection,
-                         const char *url, const char *method, const char *version,
-                         const char *upload_data, size_t *upload_data_size, void **ptr);
+  MHD_Result AccessHandlerCallback(
+    struct MHD_Connection *connection,
+    const char *url, const char *method, const char *version,
+    const char *upload_data, size_t *upload_data_size, void **ptr);
+
+  static void NotifyConnectionCallbackWrapper(
+    void *cls, struct MHD_Connection *connection,
+    void **socket_context, enum MHD_ConnectionNotificationCode toe) {
+    MHDServer *server = (MHDServer *)cls;
+    return server->NotifyConnectionCallback(connection, socket_context, toe);
+  }
+
+  struct connection_context {
+    OutputBuffer<char> data_to_send;
+  };
+  std::set<struct connection_context *> connections_;
+
+  void NotifyConnectionCallback(
+    struct MHD_Connection *connection, void **socket_context,
+    enum MHD_ConnectionNotificationCode toe) {
+    switch (toe) {
+    case MHD_CONNECTION_NOTIFY_STARTED: {
+      struct connection_context *context = new connection_context();
+      connections_.insert(context);
+      *socket_context = (void *) context;
+      break;
+    }
+    case MHD_CONNECTION_NOTIFY_CLOSED: {
+      struct connection_context *context =
+        (struct connection_context *) *socket_context;
+      connections_.erase(context);
+      delete context;
+      break;
+    }
+    default: break;
+    }
+  }
+
   struct MHD_Daemon *d_;
-  MHD_Connection *connection_;
-  OutputBuffer<char> data_;
 };
 
 static ssize_t data_generator (void *cls, uint64_t pos, char *buf, size_t max) {
@@ -137,12 +170,11 @@ static ssize_t data_generator (void *cls, uint64_t pos, char *buf, size_t max) {
   return data->Consume(buf, max);
 }
 
-MHD_Result MHDServer::HandleAccess(
+MHD_Result MHDServer::AccessHandlerCallback(
   struct MHD_Connection *connection,
   const char *url, const char *method, const char *version,
   const char *upload_data, size_t *upload_data_size, void **ptr) {
   static int aptr;
-
   if (0 != strcmp (method, "GET"))
     return MHD_NO;
 
@@ -153,21 +185,25 @@ MHD_Result MHDServer::HandleAccess(
   }
 
   *ptr = NULL;
-  if (strcmp (url, "/stream") != 0) {
+  if (strcmp (url, "/api/stream") != 0) {
     return MHD_NO;
   }
-  if (data_.size()) {
-    // Submit data
-    struct MHD_Response *response;
-    response = MHD_create_response_from_callback(
-      MHD_SIZE_UNKNOWN, 1024, &data_generator, &data_, NULL);
 
-    MHD_queue_response (connection, MHD_HTTP_OK, response);
-    MHD_destroy_response (response);
-  } else {
-    MHD_suspend_connection(connection);
-    connection_ = connection;
-  }
+  struct connection_context *context =
+    *(struct connection_context **) MHD_get_connection_info(
+      connection, MHD_CONNECTION_INFO_SOCKET_CONTEXT);
+  struct MHD_Response *response = NULL;
+  unsigned int status_code = MHD_HTTP_OK;
+  if (context->data_to_send.size())
+    response = MHD_create_response_from_callback(
+      MHD_SIZE_UNKNOWN, 1024, &data_generator, &context->data_to_send, NULL);
+  else
+    status_code = MHD_HTTP_NO_CONTENT;
+
+  MHD_queue_response(connection, status_code, response);
+  if (response)
+    MHD_destroy_response(response);
+
   return MHD_YES;
 }
 
