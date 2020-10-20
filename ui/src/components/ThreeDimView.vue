@@ -25,16 +25,16 @@ export default {
       const container = document.getElementById('container')
 
       this.camera = new Three.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.01, 100)
-      this.camera.position.z = 1
-      this.camera.position.x = 1
-      this.camera.position.y = 0.5
-      this.camera.lookAt(0.0, 0.1, 0.0)
+      this.camera.position.z = 10
+      this.camera.position.x = 10
+      this.camera.position.y = 5
+      this.camera.lookAt(0.0, 1, 0.0)
 
       this.scene = new Three.Scene()
 
       this.scene.background = new Three.Color(0xf0f0f0)
 
-      var helper = new Three.GridHelper(1, 100)
+      var helper = new Three.GridHelper(10, 100)
       helper.position.y = 0
       helper.material.opacity = 0.25
       helper.material.transparent = true
@@ -94,7 +94,7 @@ export default {
     this.stream.subscribe(data => {
       if ('absolute_pos' in data) {
         let pos = data.absolute_pos
-        pos = new Three.Vector3(pos[0], pos[1], pos[2])
+        pos = new Three.Vector3(pos[0], pos[2], pos[1])
         this.trajectory.addPoint(mm2space(pos))
       }
     })

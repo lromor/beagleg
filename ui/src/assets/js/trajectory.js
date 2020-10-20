@@ -1,7 +1,7 @@
 import * as Three from 'three'
 
 class TrajectoryPiece extends Three.Line {
-  static MAX_POINTS = 50
+  static MAX_POINTS = 500
 
   constructor () {
     const material = new Three.LineBasicMaterial({ color: 0x0000ff })
@@ -12,6 +12,7 @@ class TrajectoryPiece extends Three.Line {
     geometry.setAttribute('position', new Three.BufferAttribute(positions, 3))
     geometry.setDrawRange(0, 0)
     super(geometry, material)
+    this.frustumCulled = false
     this.length = 0
   }
 
@@ -24,11 +25,10 @@ class TrajectoryPiece extends Three.Line {
     positions[base + 2] = point.z
     this.geometry.setDrawRange(0, this.length)
     this.geometry.attributes.position.needsUpdate = true
-    return true
   }
 
   isFull () {
-    return this.length === this.MAX_POINTS
+    return this.length === TrajectoryPiece.MAX_POINTS
   }
 }
 
@@ -67,9 +67,9 @@ class Trajectory {
 }
 
 function mm2space (point) {
-  point.x = point.x / 1000
-  point.y = point.y / 1000
-  point.z = point.z / 1000
+  point.x = point.x / 100
+  point.y = point.y / 100
+  point.z = point.z / 100
   return point
 }
 
