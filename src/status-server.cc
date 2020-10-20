@@ -90,7 +90,9 @@ class MHDServer : public FDMultiplexer::ExternalHandler {
 public:
   MHDServer(const int port) : d_(NULL) {
     d_ = MHD_start_daemon(
-      MHD_USE_DEBUG | MHD_ALLOW_SUSPEND_RESUME, port, NULL, NULL,
+      // MHD_USE_DEBUG |
+      MHD_ALLOW_SUSPEND_RESUME,
+      port, NULL, NULL,
       &AccessHandlerCallbackWrapper, (void *) this,
       MHD_OPTION_NOTIFY_CONNECTION, &NotifyConnectionCallbackWrapper, (void *) this,
       MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int) 2,

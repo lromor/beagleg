@@ -6,6 +6,8 @@
 <script>
 import * as Three from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
+import getStream from '@/assets/js/stream.js'
+import { Trajectory, mm2space } from '@/assets/js/trajectory.js'
 
 export default {
   name: 'ThreeDimView',
@@ -22,27 +24,21 @@ export default {
     init: function () {
       const container = document.getElementById('container')
 
-      this.camera = new Three.PerspectiveCamera(70, container.clientWidth / container.clientHeight, 0.01, 100)
+      this.camera = new Three.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.01, 100)
       this.camera.position.z = 1
       this.camera.position.x = 1
       this.camera.position.y = 0.5
-      this.camera.lookAt(0.0, 1, 0.0)
+      this.camera.lookAt(0.0, 0.1, 0.0)
 
       this.scene = new Three.Scene()
 
       this.scene.background = new Three.Color(0xf0f0f0)
 
-      var helper = new Three.GridHelper(5, 100)
+      var helper = new Three.GridHelper(1, 100)
       helper.position.y = 0
       helper.material.opacity = 0.25
       helper.material.transparent = true
       this.scene.add(helper)
-
-      const geometry = new Three.BoxGeometry(0.2, 0.2, 0.2)
-      const material = new Three.MeshNormalMaterial()
-
-      this.mesh = new Three.Mesh(geometry, material)
-      this.scene.add(this.mesh)
 
       this.renderer = new Three.WebGLRenderer({ antialias: true })
       this.renderer.setSize(container.clientWidth, container.clientHeight, false)
@@ -51,8 +47,8 @@ export default {
       this.controls = new TrackballControls(this.camera, this.renderer.domElement)
 
       this.controls.rotateSpeed = 1.0
-      this.controls.zoomSpeed = 1.2
-      this.controls.panSpeed = 0.8
+      this.controls.zoomSpeed = 1.0
+      this.controls.panSpeed = 0.1
 
       this.controls.keys = [65, 83, 68]
     },
@@ -89,6 +85,19 @@ export default {
   mounted () {
     this.init()
     this.animate()
+    this.stream = getStream()
+
+    // Create trajectory object
+    this.trajectory = new Trajectory(this.scene)
+
+    // Add subscriber to stream
+    this.stream.subscribe(data => {
+      if ('absolute_pos' in data) {
+        let pos = data.absolute_pos
+        pos = new Three.Vector3(pos[0], pos[1], pos[2])
+        this.trajectory.addPoint(mm2space(pos))
+      }
+    })
   }
 }
 </script>
