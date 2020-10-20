@@ -95,7 +95,7 @@ public:
       port, NULL, NULL,
       &AccessHandlerCallbackWrapper, (void *) this,
       MHD_OPTION_NOTIFY_CONNECTION, &NotifyConnectionCallbackWrapper, (void *) this,
-      MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int) 2,
+      MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int) 10,
       MHD_OPTION_END);
   }
 
