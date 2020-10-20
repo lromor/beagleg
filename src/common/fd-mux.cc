@@ -19,15 +19,42 @@
  */
 #include "fd-mux.h"
 
+#include <ctime>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/select.h>
 #include <unistd.h>
-
+#include <sys/time.h>
 #include <algorithm>
 
 #include "logging.h"
+
+static inline void timespecsub(struct timespec *a, struct timespec *b,
+                               struct timespec *result) {
+  result->tv_sec = a->tv_sec - b->tv_sec;
+  result->tv_nsec = a->tv_nsec - b->tv_nsec;
+  if (result->tv_nsec < 0) {
+    --result->tv_sec;
+    result->tv_nsec += 1000000000L;
+  }
+}
+
+static bool TimeExpired(struct timespec *start, struct timeval *reference) {
+  struct timespec end;
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  timespecsub(&end, start, &end);
+
+  struct timeval elapsed;
+  elapsed.tv_sec = end.tv_sec;
+  elapsed.tv_usec = end.tv_nsec / 1000;
+
+  if (!timercmp(&elapsed, reference, <))
+    return false;
+
+  timersub(reference, &elapsed, reference);
+  return true;
+}
 
 static volatile sig_atomic_t caught_signal = 0;
 
@@ -89,63 +116,72 @@ void FDMultiplexer::CallHandlers(fd_set *to_call_fd_set, int *available_fds,
   }
 }
 
+inline const struct timeval ms2timeval(unsigned int ms) {
+  struct timeval timeout;
+  timeout.tv_sec = ms / 1000;
+  timeout.tv_usec = (ms % 1000) * 1000;
+  return timeout;
+}
+
 bool FDMultiplexer::SingleCycle(unsigned int timeout_ms) {
   fd_set read_fds;
   fd_set write_fds;
   fd_set except_fds;
 
-  struct timeval timeout;
-  timeout.tv_sec = timeout_ms / 1000;
-  timeout.tv_usec = (timeout_ms % 1000) * 1000;
+  struct timespec start;
+  const struct timeval kTimeout = ms2timeval(timeout_ms);
+  struct timeval timeout = kTimeout;
 
-  int maxfd = -1;
-  FD_ZERO(&read_fds);
-  FD_ZERO(&write_fds);
-  FD_ZERO(&except_fds);
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  while (TimeExpired(&start, &timeout)) {
+    int maxfd = -1;
+    FD_ZERO(&read_fds);
+    FD_ZERO(&write_fds);
+    FD_ZERO(&except_fds);
 
-  // Readers
-  for (const auto &it : read_handlers_) {
-    maxfd = std::max(maxfd, it.first);
-    FD_SET(it.first, &read_fds);
-  }
-
-  // Writers
-  for (const auto &it : write_handlers_) {
-    maxfd = std::max(maxfd, it.first);
-    FD_SET(it.first, &write_fds);
-  }
-
-  for (auto handler : external_handlers_)
-    handler->Register(&read_fds, &write_fds, &except_fds, &maxfd);
-
-  if (maxfd < 0) {
-    // file descriptors only can be registred from within handlers
-    // or before running the Loop(). So if no filedesctiptors are left,
-    // there is no chance for any to re-appear, so we can exit.
-    Log_info("Exiting loop() after last file descriptor is gone.");
-    return false;
-  }
-
-  int fds_ready = select(maxfd + 1, &read_fds, &write_fds, &except_fds, &timeout);
-  if (fds_ready < 0) {
-    if (!caught_signal)
-      perror("select() failed");
-    return false;
-  }
-
-  for (auto handler : external_handlers_)
-    handler->Trigger(&read_fds, &write_fds, &except_fds);
-
-  if (fds_ready == 0) {             // No FDs ready: timeout situation.
-    for (auto it = idle_handlers_.begin(); it != idle_handlers_.end(); /**/) {
-      const bool keep_handler = (*it)();
-      it = keep_handler ? std::next(it) : idle_handlers_.erase(it);
+    // Readers
+    for (const auto &it : read_handlers_) {
+      maxfd = std::max(maxfd, it.first);
+      FD_SET(it.first, &read_fds);
     }
-    return true;
+
+    // Writers
+    for (const auto &it : write_handlers_) {
+      maxfd = std::max(maxfd, it.first);
+      FD_SET(it.first, &write_fds);
+    }
+
+    for (auto handler : external_handlers_)
+      handler->Register(&read_fds, &write_fds, &except_fds, &maxfd);
+
+    if (maxfd < 0) {
+      // file descriptors only can be registred from within handlers
+      // or before running the Loop(). So if no filedesctiptors are left,
+      // there is no chance for any to re-appear, so we can exit.
+      Log_info("Exiting loop() after last file descriptor is gone.");
+      return false;
+    }
+
+    int fds_ready = select(maxfd + 1, &read_fds, &write_fds, &except_fds, &timeout);
+    if (fds_ready < 0) {
+      if (!caught_signal)
+        perror("select() failed");
+      return false;
+    }
+
+    for (auto handler : external_handlers_)
+      handler->Trigger(&read_fds, &write_fds, &except_fds);
+
+    CallHandlers(&read_fds, &fds_ready, &read_handlers_);
+    CallHandlers(&write_fds, &fds_ready, &write_handlers_);
+    timeout = kTimeout;
   }
 
-  CallHandlers(&read_fds, &fds_ready, &read_handlers_);
-  CallHandlers(&write_fds, &fds_ready, &write_handlers_);
+  // Timeout
+  for (auto it = idle_handlers_.begin(); it != idle_handlers_.end(); /**/) {
+    const bool keep_handler = (*it)();
+    it = keep_handler ? std::next(it) : idle_handlers_.erase(it);
+  }
 
   return true;
 }

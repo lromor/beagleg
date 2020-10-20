@@ -81,19 +81,24 @@ private:
   size_t size_;
 };
 
+static ssize_t data_generator (void *cls, uint64_t pos, char *buf, size_t max) {
+  OutputBuffer<char> *data = (OutputBuffer<char> *) cls;
+  return data->Consume(buf, max);
+}
+
 class MHDServer : public FDMultiplexer::ExternalHandler {
 public:
   MHDServer(const int port) : d_(NULL) {
     d_ = MHD_start_daemon(
-      MHD_USE_DEBUG, port, NULL, NULL,
+      MHD_USE_DEBUG | MHD_ALLOW_SUSPEND_RESUME, port, NULL, NULL,
       &AccessHandlerCallbackWrapper, (void *) this,
       MHD_OPTION_NOTIFY_CONNECTION, &NotifyConnectionCallbackWrapper, (void *) this,
+      MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int) 2,
       MHD_OPTION_END);
   }
 
   virtual bool Register(fd_set *read_fds, fd_set *write_fds,
                         fd_set *except_fds, int *max_fd) final {
-
     int max = 0;
     MHD_get_fdset(d_, read_fds, write_fds, except_fds, &max);
     *max_fd = std::max(max, *max_fd);
@@ -108,8 +113,6 @@ public:
   bool SendData(const std::string &data) {
     for (auto ctx : connections_)
       ctx->data_to_send.Update(data.c_str(), data.length());
-
-    MHD_run(d_);
     return true;
   }
 
@@ -138,6 +141,7 @@ private:
 
   struct connection_context {
     OutputBuffer<char> data_to_send;
+    MHD_Connection *connection;
   };
   std::set<struct connection_context *> connections_;
 
@@ -146,9 +150,12 @@ private:
     enum MHD_ConnectionNotificationCode toe) {
     switch (toe) {
     case MHD_CONNECTION_NOTIFY_STARTED: {
-      struct connection_context *context = new connection_context();
+      struct connection_context *context =
+        new connection_context{ {}, connection};
       connections_.insert(context);
       *socket_context = (void *) context;
+      Log_info("[Status server] Accepting new connection. (Total connections: %ld)",
+               connections_.size());
       break;
     }
     case MHD_CONNECTION_NOTIFY_CLOSED: {
@@ -156,6 +163,9 @@ private:
         (struct connection_context *) *socket_context;
       connections_.erase(context);
       delete context;
+      Log_info("[Status server] Connection closed.(Total connections: %ld)",
+               connections_.size());
+      MHD_run(d_);
       break;
     }
     default: break;
@@ -164,11 +174,6 @@ private:
 
   struct MHD_Daemon *d_;
 };
-
-static ssize_t data_generator (void *cls, uint64_t pos, char *buf, size_t max) {
-  OutputBuffer<char> *data = (OutputBuffer<char> *) cls;
-  return data->Consume(buf, max);
-}
 
 MHD_Result MHDServer::AccessHandlerCallback(
   struct MHD_Connection *connection,
@@ -188,22 +193,16 @@ MHD_Result MHDServer::AccessHandlerCallback(
   if (strcmp (url, "/api/stream") != 0) {
     return MHD_NO;
   }
-
   struct connection_context *context =
     *(struct connection_context **) MHD_get_connection_info(
       connection, MHD_CONNECTION_INFO_SOCKET_CONTEXT);
-  struct MHD_Response *response = NULL;
-  unsigned int status_code = MHD_HTTP_OK;
-  if (context->data_to_send.size())
-    response = MHD_create_response_from_callback(
+  if (context->data_to_send.size()) {
+    struct MHD_Response *response = MHD_create_response_from_callback(
       MHD_SIZE_UNKNOWN, 1024, &data_generator, &context->data_to_send, NULL);
-  else
-    status_code = MHD_HTTP_NO_CONTENT;
 
-  MHD_queue_response(connection, status_code, response);
-  if (response)
+    MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
-
+  }
   return MHD_YES;
 }
 
@@ -212,6 +211,25 @@ public:
   Impl() : machine_control_(NULL), server_(NULL) {}
   virtual ~Impl() {}
   bool Init(FDMultiplexer *event_server, const char *bind_addr, int port);
+
+  std::string GetStatus() {
+    std::stringstream ss;
+    ss << "{ ";
+    if (machine_control_) {
+      AxesRegister pos;
+      machine_control_->GetCurrentPosition(&pos);
+      ss << "\"current_pos\": [ ";
+      for (auto it = pos.begin();
+           it != pos.end(); ++it) {
+        ss << *it;
+        if (it != pos.end() - 1)
+          ss << ", ";
+      }
+      ss << " ]";
+    }
+    ss << " }\n";
+    return ss.str();
+  }
 
   virtual void GCodeMachineControlCreated(GCodeMachineControl *machine_control) {
     machine_control_ = machine_control;
@@ -254,6 +272,10 @@ private:
 bool StatusServer::Impl::Init(FDMultiplexer *event_server, const char *bind_addr, int port) {
   server_ = new MHDServer(port);
   event_server->AddExternalHandler(server_);
+  event_server->RunOnIdle([&]() {
+    server_->SendData(GetStatus());
+    return true;
+  });
   return true;
 }
 
