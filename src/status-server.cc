@@ -14,71 +14,86 @@
 #include "status-server.h"
 #include "gcode-machine-control.h"
 #include "common/logging.h"
+#include "common/container.h"
 
-template<typename T>
-static inline void reverse_memcpy(T * dst, const T *src, size_t size) {
-  for (size_t i = 0; i < size; ++i)
-    dst[size - 1 - i] = src[i];
-}
-
-template<typename T>
+template<typename T, size_t CHUNK_SIZE = 4096>
 class OutputBuffer {
 public:
-  OutputBuffer() : data_(NULL), size_(0) {}
+  OutputBuffer() : back_write_pos_(CHUNK_SIZE), front_read_pos_(CHUNK_SIZE) {}
 
-  ~OutputBuffer() { clear(); }
+  void Update(const T *src, const size_t size) {
+    T *back = NULL;
+    size_t src_pos = 0;
 
-  bool Update(const T *data, const size_t size){
-    if (data_ == NULL) {
-      data_ = (T *)malloc(sizeof(T) * size);
-      if (data_ == NULL) {
-        perror("malloc()");
-        return false;
-      }
-    } else {
-      const size_t new_size = size_ + size;
-      data_ = (T *)realloc(data_, new_size);
-      if (data_ == NULL) {
-        perror("realloc()");
-        return false;
-      }
-      // Shift previous data
-      memcpy(data_ + size, data_, size_);
-      if (data_ == NULL) {
-        perror("memcpy()");
-        return false;
-      }
+    while (src_pos < size) {
+      if (back_write_pos_ == CHUNK_SIZE) {
+        back = new T[CHUNK_SIZE];
+        if (data_.empty())
+          front_read_pos_ = 0;
+        data_.push_back(std::unique_ptr<T>(back));
+        back_write_pos_ = 0;
+      } else
+        back = data_.back().get();
+
+      // Fill the chunk
+      const size_t available_chunk_size = CHUNK_SIZE - back_write_pos_;
+      const size_t remaining = size - src_pos;
+      const size_t copy_size =
+        (available_chunk_size > remaining)
+        ? remaining : available_chunk_size;
+      memcpy(back + back_write_pos_, src + src_pos, copy_size * sizeof(T));
+      src_pos += copy_size;
+      back_write_pos_ += copy_size;
     }
-
-    reverse_memcpy(data_, data, size);
-    size_ += size;
-    return true;
   }
 
-  const size_t Consume(void *data, const size_t size_bytes) {
-    const size_t current_bytes = bytes();
-    const size_t data_size_bytes =
-      (size_bytes > current_bytes) ? current_bytes : size_bytes;
-    const size_t start = (current_bytes - data_size_bytes) / sizeof(T);
-    reverse_memcpy((T *)data, (T *)data_ + start, data_size_bytes / sizeof(T));
-    if (start > 0) {
-      data_ = (T *)realloc(data_, size_);
-      if (data_ == NULL) {
-        perror("realloc()");
-        return 0;
+  const size_t Consume(void *dst, const size_t size_bytes) {
+    const size_t size = size_bytes / sizeof(T);
+    T *dst_t = (T *)dst;
+    size_t dst_pos = 0;
+    T *front = NULL;
+
+    while (dst_pos < size) {
+      if (data_.empty() || (data_.size() == 1 && (front_read_pos_ == back_write_pos_)))
+        break;
+
+      if (front_read_pos_ == CHUNK_SIZE) {
+        data_.pop_front();
+        front_read_pos_ = 0;
       }
+      front = data_.front().get();
+
+      const size_t available_chunk_size = (data_.size() == 1)
+        ? back_write_pos_ - front_read_pos_
+        : CHUNK_SIZE - front_read_pos_;
+      const size_t remaining = size - dst_pos;
+      const size_t copy_size =
+        (available_chunk_size > remaining)
+        ? remaining : available_chunk_size;
+      memcpy(dst_t + dst_pos, front + front_read_pos_, copy_size * sizeof(T));
+      dst_pos += copy_size;
+      front_read_pos_ += copy_size;
     }
-    size_ = start;
-    return data_size_bytes;
+    return dst_pos * sizeof(T);
   }
 
-  const size_t size() { return size_; }
-  const size_t bytes() { return size() * sizeof(T); }
-  void clear() { free(data_); size_ = 0; }
+  const size_t empty() {
+    if (!data_.size()) {
+      return true;
+    }
+    const bool same_pos =
+      front_read_pos_ != back_write_pos_;
+    if (data_.size() == 1
+        && front_read_pos_ == back_write_pos_) {
+      return true;
+    }
+    return false;
+  }
 
 private:
-  T *data_;
-  size_t size_;
+  std::deque<std::unique_ptr<T>> data_;
+  size_t back_write_pos_;
+  size_t front_read_pos_;
 };
 
 static ssize_t data_generator (void *cls, uint64_t pos, char *buf, size_t max) {
@@ -198,9 +213,9 @@ MHD_Result MHDServer::AccessHandlerCallback(
   struct connection_context *context =
     *(struct connection_context **) MHD_get_connection_info(
       connection, MHD_CONNECTION_INFO_SOCKET_CONTEXT);
-  if (context->data_to_send.size()) {
+  if (!context->data_to_send.empty()) {
     struct MHD_Response *response = MHD_create_response_from_callback(
-      MHD_SIZE_UNKNOWN, 1024, &data_generator, &context->data_to_send, NULL);
+      MHD_SIZE_UNKNOWN, 4096, &data_generator, &context->data_to_send, NULL);
 
     MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
