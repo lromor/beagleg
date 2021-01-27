@@ -1,6 +1,7 @@
 #include "planner-experiment.h"
 
 int main(int argc, char *argv[]) {
+
   GCodeParser::Config parser_cfg;
   MachineControlConfig config;
   Planner planner(&config);
@@ -18,6 +19,5 @@ int main(int argc, char *argv[]) {
   GCodeParser parser(parser_cfg, &event_receiver);
 
   parser.ReadFile(stdin, stderr);
-
   return 0;
 }

@@ -20,14 +20,14 @@ BEAGLEG_OPT_CFLAGS?=-O3
 CFLAGS+=-Wall -D_XOPEN_SOURCE=500 $(ARM_COMPILE_FLAGS) $(BEAGLEG_OPT_CFLAGS) -I../
 
 # See toplevel Makefile comment
-CXXFLAGS+=-std=c++11 $(CFLAGS)
+CXXFLAGS+=-std=c++20 $(CFLAGS)
 CXX?=g++
 
-LDFLAGS+=-lpthread -lm
+LDFLAGS+=-lpthread -lm -lgsl
 
 COMMON_LIBS=../common/libbeaglegbase.a ../gcode-parser/libgcodeparser.a
 
-OBJECTS=../machine-control-config.o ../config-parser.o
+OBJECTS=../machine-control-config.o ../config-parser.o quad.o
 MAIN_OBJECTS=planner-experiment.o
 TARGETS=planner-experiment
 

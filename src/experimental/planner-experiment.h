@@ -19,7 +19,7 @@
 #include "../gcode-machine-control.h"
 #include "../config-parser.h"
 #include "trajectory.h"
-
+#include "bezier.h"
 
 template<typename Primitive>
 struct SpeedProfile : public Primitive {};
@@ -40,7 +40,7 @@ class Planner {
 public:
 
   Planner(MachineControlConfig *config, double tolerance_mm = 0.1f)
-    : config_(config), trajectory_(),
+    : config_(config), trajectory_(), min_time_lookahead_(1),
       tolerance_mm_(tolerance_mm),
       last_speed_(),
       last_accel_(),
@@ -55,10 +55,14 @@ public:
   template<typename TrajectoryPrimitiveClass>
   bool Enqueue(const TrajectoryPrimitiveClass &v) {
     trajectory_.push({std::unique_ptr<TrajectoryPrimitive<3>>(new TrajectoryPrimitiveClass(v)), TrajectoryPrimitiveClass::type});
+    Plan();
     return true;
   }
 
   void Plan() {
+
+    // Compute new segment length
+
     // Pipeline
 
     // 1st stage, split into small chunks of fixed maximum amount of steps
@@ -72,7 +76,12 @@ public:
 private:
   MachineControlConfig *config_;
   std::queue<TrajectorySegment> trajectory_;
+  std::queue<MotionSegment> planning_buffer_;
+  size_t min_time_lookahead_; // Since our last stop, before pushing stuff in the backend,
+                              // we require to hold at least this amount of motion time in the
+                              // planning buffer before starting sending stuff to the motion backend.
   double tolerance_mm_;
+  Vector<3> last_pos_;
   float last_speed_;
   float last_accel_;
   float last_jerk_;
@@ -106,7 +115,7 @@ public:
   virtual bool coordinated_move(float feed_mm_p_sec,
                                 const AxesRegister &absolute_pos) {
     LineTrajectoryPrimitive<3> line;
-    line.end = Point<3>{absolute_pos[AXIS_X], absolute_pos[AXIS_Y], absolute_pos[AXIS_Z]};
+    line.end = Vector<3>{absolute_pos[AXIS_X], absolute_pos[AXIS_Y], absolute_pos[AXIS_Z]};
     line.requested_feedrate = feed_mm_p_sec;
     planner_->Enqueue(line);
     return true;
@@ -114,7 +123,7 @@ public:
   virtual bool rapid_move(float feed_mm_p_sec,
                           const AxesRegister &absolute_pos) {
     LineTrajectoryPrimitive<3> line;
-    line.end = Point<3>{absolute_pos[AXIS_X], absolute_pos[AXIS_Y], absolute_pos[AXIS_Z]};
+    line.end = Vector<3>{absolute_pos[AXIS_X], absolute_pos[AXIS_Y], absolute_pos[AXIS_Z]};
     line.requested_feedrate = feed_mm_p_sec;
     planner_->Enqueue(line);
     return true;
