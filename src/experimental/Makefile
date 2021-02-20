@@ -27,7 +27,7 @@ LDFLAGS+=-lpthread -lm -lgsl
 
 COMMON_LIBS=../common/libbeaglegbase.a ../gcode-parser/libgcodeparser.a
 
-OBJECTS=../machine-control-config.o ../config-parser.o quad.o
+OBJECTS=../machine-control-config.o ../config-parser.o quad.o bezier-planner.o
 MAIN_OBJECTS=planner-experiment.o
 TARGETS=planner-experiment
 

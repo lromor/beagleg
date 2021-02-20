@@ -1,6 +1,7 @@
 #ifndef __BEZIER_H_
 #define __BEZIER_H_
 
+#include <iostream>
 #define __STDCPP_WANT_MATH_SPEC_FUNCS__ 1
 #include <cmath>
 #include <cstddef>
@@ -29,15 +30,16 @@ struct Bezier {
   using CPType = std::array<Vector<N>, O + 1>;
   std::array<Vector<N>, O + 1> cps;
 
-  Bezier Derivative() {
+  Bezier<O-1, N> Derivative() const {
     std::array<Vector<N>, O> dcps;
-    for (int i = 0; i < O; ++i)
+    for (unsigned i = 0; i < O; ++i)
       dcps[i] = (cps[i + 1] - cps[i]) * O;
-    return Bezier<O-1, N>(dcps);
+    Bezier<O-1, N> d = {dcps};
+    return d;
   }
 
   double length() const {
-    Bezier d = Derivative();
+    auto d = Derivative();
     double result;
     Integrate([&](double t) {
       return norm(d(t));
@@ -46,7 +48,7 @@ struct Bezier {
   }
 
   Vector<N> operator()(double t) {
-    Vector<N> out = {0};
+    Vector<N> out = {};
     auto b = BernsteinBasis<O>(t);
 
     for (size_t i = 0; i < N; ++i)

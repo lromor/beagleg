@@ -8,32 +8,35 @@
 #include <ostream>
 #include "vector.h"
 #include <math.h>
+#include "bezier.h"
+
+enum class TrajectoryPrimitiveType { Line, CubicBezier, CircularArc };
 
 template<size_t N>
 struct TrajectoryPrimitive {
-  double requested_feedrate;
+  using Type = TrajectoryPrimitiveType;
   Vector<N> end;
   virtual double length() const = 0;
+  virtual ~TrajectoryPrimitive() {}
 };
 
-enum class TrajectoryPrimitiveType { Line, CubicBezier, Arc };
 
 template<size_t N>
 struct ArcTrajectoryPrimitive : public TrajectoryPrimitive<N> {
+  constexpr static TrajectoryPrimitiveType type = TrajectoryPrimitiveType::CircularArc;
+
   Vector<N> center;
 
   double length() const final {
-    double chord_length = norm(this->end);
-    double ray_length = norm(center);
+    double chord_length = this->end.norm();
+    double ray_length = center.norm();
     return ray_length * 2 * std::asin(ray_length / chord_length);
   }
 
-  constexpr static TrajectoryPrimitiveType type = TrajectoryPrimitiveType::Arc;
   std::string ToString() const {
     std::ostringstream ss;
     ss << "{ ";
-    ss << "type: arc" << ", ";
-    ss << "requested_feedrate: " << this->requested_feedrate << ", ";
+    ss << "type: circular_arc" << ", ";
     ss << "end: " << this->end << ", ";
     ss << "center: " << center;
     ss << " }";
@@ -43,7 +46,8 @@ struct ArcTrajectoryPrimitive : public TrajectoryPrimitive<N> {
 
 template<size_t N>
 struct LineTrajectoryPrimitive : public TrajectoryPrimitive<N> {
-  // Returns the arc-length of the primitive.
+  constexpr static TrajectoryPrimitiveType type = TrajectoryPrimitiveType::Line;
+
   double length() const {
     double d = 0;
     for (size_t i = 0; i < N; ++i) {
@@ -53,12 +57,10 @@ struct LineTrajectoryPrimitive : public TrajectoryPrimitive<N> {
     return std::sqrt(d);
   }
 
-  constexpr static TrajectoryPrimitiveType type = TrajectoryPrimitiveType::Line;
   std::string ToString() const {
     std::ostringstream ss;
     ss << "{ ";
     ss << "type: line" << ", ";
-    ss << "requested_feedrate: " << this->requested_feedrate << ", ";
     ss << "end: " << this->end;
     ss << " }";
     return ss.str();
@@ -68,22 +70,18 @@ struct LineTrajectoryPrimitive : public TrajectoryPrimitive<N> {
 template<size_t N>
 struct CubicBezierTrajectoryPrimitive : public TrajectoryPrimitive<N> {
   constexpr static TrajectoryPrimitiveType type = TrajectoryPrimitiveType::CubicBezier;
-  Vector<N> cp1;
-  Vector<N> cp2;
-  Vector<N> cp3;
 
-  // Quite an approximation.
+  Vector<N> cp1, cp2, cp3;
+
   double length() const final {
-    double chord = norm(cp3);
-    double cont_net = norm(cp1) + norm(cp2 - cp1) + norm(cp3 - cp2);
-    return (cont_net + chord) / 2;
+    const auto b = CubicBezier<3>{cp1, cp2, cp3};
+    return b.length();
   }
 
   std::string ToString() const {
     std::ostringstream ss;
     ss << "{ ";
     ss << "type: cubic_bezier" << ", ";
-    ss << "requested_feedrate: " << this->requested_feedrate << ", ";
     ss << "end: [" << this->end << ", ";
     ss << "cp0" << 0 << ", ";
     ss << "cp1" << cp1 << ", ";
@@ -94,9 +92,10 @@ struct CubicBezierTrajectoryPrimitive : public TrajectoryPrimitive<N> {
   }
 };
 
-struct TrajectorySegment {
+struct TrajectoryArc {
+  size_t id; // Identifies the gcode command.
   std::unique_ptr<TrajectoryPrimitive<3>> curve;
-  TrajectoryPrimitiveType type;
+  double requested_feedrate;
 };
 
 #endif // __TRAJECTORY_H_
