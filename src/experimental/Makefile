@@ -27,16 +27,16 @@ LDFLAGS+=-lpthread -lm -lgsl
 
 COMMON_LIBS=../common/libbeaglegbase.a ../gcode-parser/libgcodeparser.a
 
-OBJECTS=../machine-control-config.o ../config-parser.o quad.o bezier-planner.o
-MAIN_OBJECTS=planner-experiment.o
-TARGETS=planner-experiment
+OBJECTS=../machine-control-config.o ../config-parser.o quad.o experimental-planner.o
+MAIN_OBJECTS=example.o
+TARGETS=example
 
 UNITTEST_BINARIES=gcode-parser_test gcode-streamer_test arc-gen_test
 TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
 
 DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
 
-all : planner-experiment
+all : example
 
 ../common/libbeaglegbase.a:
 	$(MAKE) -C ../common
@@ -47,7 +47,7 @@ all : planner-experiment
 ../%.o: ../%.c
 	$(MAKE) -C $@
 
-planner-experiment: planner-experiment.o $(OBJECTS) $(COMMON_LIBS)
+example: example.o $(OBJECTS) $(COMMON_LIBS)
 	$(CROSS_COMPILE)$(CXX) -o $@ $^ $(COMMON_LIBS) $(PRUSS_LIBS) $(LDFLAGS)
 
 test: $(UNITTEST_BINARIES)

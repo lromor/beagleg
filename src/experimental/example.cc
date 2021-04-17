@@ -1,12 +1,9 @@
-#include "planner-experiment.h"
+#include "experimental-planner.h"
 
 int main(int argc, char *argv[]) {
   GCodeParser::Config parser_cfg;
   MachineControlConfig config;
-  Planner *planner = Planner::Create(&config);
-
   ConfigParser config_parser;
-
 
   config_parser.SetContentFromFile("../../sample.config");
   config.ConfigureFromFile(&config_parser);
@@ -14,9 +11,10 @@ int main(int argc, char *argv[]) {
   config.require_homing = false;
   config.range_check = false;
 
-  GCodeEventReceiver event_receiver(planner);
-  GCodeParser parser(parser_cfg, &event_receiver);
-
+  ExperimentalPlanner *planner = ExperimentalPlanner::Create(&config);
+  GCodeParser parser(parser_cfg, planner->ParseEventReceiver());
   parser.ReadFile(stdin, stderr);
+
+  delete planner;
   return 0;
 }
