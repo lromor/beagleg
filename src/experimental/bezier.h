@@ -15,26 +15,26 @@ inline double binom(int n, int k) {
   return 1 / ((n + 1) * std::beta(n - k + 1, k + 1));
 }
 
-template<int N, typename T>
-Vector<N + 1, T> BernsteinBasis(double t) {
-  Vector<N + 1, T> out;
+template<typename T, int N>
+Vector<T, N + 1> BernsteinBasis(double t) {
+  Vector<T, N + 1> out;
   for (int i = 0; i <= N; ++i)
     out[i] = binom(N, i) * std::pow(t, i) * std::pow(1 - t, N - i);
   return out;
 }
 
-// O: Order of the bezier.
 // N: Dimensionality.
-template<unsigned O, size_t N, typename T>
+// O: Order of the bezier.
+template<typename T, size_t N, unsigned O>
 struct Bezier {
-  using CPType = std::array<Vector<N, T>, O + 1>;
-  std::array<Vector<N, T>, O + 1> cps;
+  using CPType = std::array<Vector<T, N>, O + 1>;
+  std::array<Vector<T, N>, O + 1> cps;
 
-  Bezier<O-1, N, T> Derivative() const {
-    std::array<Vector<N, T>, O> dcps;
+  Bezier<T, N, O-1> Derivative() const {
+    std::array<Vector<T, N>, O> dcps;
     for (unsigned i = 0; i < O; ++i)
-      dcps[i] = (cps[i + 1] - cps[i]) * O;
-    Bezier<O-1, N, T> d = {dcps};
+      dcps[i] = (cps[i + 1] - cps[i]) * static_cast<T>(O);
+    Bezier<T, N, O-1> d = {dcps};
     return d;
   }
 
@@ -42,14 +42,14 @@ struct Bezier {
     auto d = Derivative();
     double result;
     Integrate([&](double t) {
-      return norm(d(t));
+      return d(t).norm();
     }, 0, 1, &result);
     return result;
   }
 
-  Vector<N, T> operator()(double t) {
-    Vector<N, T> out = {};
-    auto b = BernsteinBasis<O>(t);
+  Vector<T, N> operator()(double t) {
+    Vector<T, N> out = {};
+    auto b = BernsteinBasis<T, O>(t);
 
     for (size_t i = 0; i < N; ++i)
       for (unsigned j = 0; j < O + 1; ++j)
@@ -59,6 +59,5 @@ struct Bezier {
 };
 
 template<size_t N, typename T>
-using CubicBezier = Bezier<3, N, T>;
-
+using CubicBezier = Bezier<T, N, 3>;
 #endif // __BEZIER_H_
