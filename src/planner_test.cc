@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <cfloat>
+#include <ios>
+
 #include "common/logging.h"
 #include "gcode-machine-control.h"
 #include "gcode-parser/gcode-parser.h"
@@ -192,6 +195,40 @@ class PlannerHarness {
   bool finished_;
   Planner *planner_;
 };
+
+template <typename T>
+static inline T fabs_accel(const T v0, const T v1, const int s) {
+  const T accel = (v1 * v1 - v0 * v0) / (2 * s);
+  return fabs(accel);
+}
+
+// Verify that on average, the profile satisfies
+// the configured constraints both for speed and acceleration.
+static void VerifySegmentConstraints(const MachineControlConfig &config,
+                                     const LinearSegmentSteps &segment,
+                                     const float epsilon = 1e-3) {
+  // Real world coordinates
+  const float axes[3] = {segment.steps[AXIS_X] / config.steps_per_mm[AXIS_X],
+                         segment.steps[AXIS_Y] / config.steps_per_mm[AXIS_Y],
+                         segment.steps[AXIS_Z] / config.steps_per_mm[AXIS_Z]};
+
+  const float hypotenuse =
+    sqrtf(axes[0] * axes[0] + axes[1] * axes[1] + axes[2] * axes[2]);
+
+  for (int i = 0; i <= AXIS_Z; ++i) {
+    const GCodeParserAxis axis = (GCodeParserAxis)i;
+    if (segment.steps[axis]) {
+      const float accel =
+        fabs_accel(segment.v0, segment.v1, segment.steps[axis]) * axes[i] /
+        (config.steps_per_mm[axis] * hypotenuse);
+      const float max_accel = config.acceleration[axis];
+      EXPECT_TRUE(fabs(accel - max_accel) < epsilon)
+        << "Estimated Accel (" << accel << " + " << std::setprecision(1)
+        << epsilon << std::defaultfloat << ") > "
+        << "Max Accel (" << max_accel << ")";
+    }
+  }
+}
 
 // Conditions that we expect in all moves.
 static void VerifyCommonExpectations(
@@ -439,6 +476,24 @@ void testShallowAngleAllStartingPoints(float threshold, float testing_angle) {
       }
     }
   }
+}
+
+// Executing multiple short steps on a line should
+// should abide to the provided constraints.
+TEST(PlannerTest, StraightLine_LotsOfSteps) {
+  MachineControlConfig *config = new MachineControlConfig;
+  InitTestConfig(config);
+  PlannerHarness plantest(0, 0, config);
+  unsigned kNumSteps = 10;
+  AxesRegister pos = {};
+
+  for (unsigned i = 0; i < kNumSteps; ++i) {
+    pos[AXIS_X] += 1;
+    plantest.Enqueue(pos, 1000);
+  }
+
+  for (const auto segment : plantest.segments())
+    VerifySegmentConstraints(*config, segment);
 }
 
 // these tests don't work currently.
