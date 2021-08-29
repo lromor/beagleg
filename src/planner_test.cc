@@ -206,12 +206,11 @@ static inline T fabs_accel(const T v0, const T v1, const int s) {
 // the configured constraints both for speed and acceleration.
 static void VerifySegmentConstraints(const MachineControlConfig &config,
                                      const LinearSegmentSteps &segment,
-                                     const float epsilon = 1e-3) {
+                                     const float rel_error = 1e-3) {
   // Real world coordinates
   const float axes[3] = {segment.steps[AXIS_X] / config.steps_per_mm[AXIS_X],
                          segment.steps[AXIS_Y] / config.steps_per_mm[AXIS_Y],
                          segment.steps[AXIS_Z] / config.steps_per_mm[AXIS_Z]};
-
   const float hypotenuse =
     sqrtf(axes[0] * axes[0] + axes[1] * axes[1] + axes[2] * axes[2]);
 
@@ -222,10 +221,7 @@ static void VerifySegmentConstraints(const MachineControlConfig &config,
         fabs_accel(segment.v0, segment.v1, segment.steps[axis]) * axes[i] /
         (config.steps_per_mm[axis] * hypotenuse);
       const float max_accel = config.acceleration[axis];
-      EXPECT_TRUE(fabs(accel - max_accel) < epsilon)
-        << "Estimated Accel (" << accel << " + " << std::setprecision(1)
-        << epsilon << std::defaultfloat << ") > "
-        << "Max Accel (" << max_accel << ")";
+      EXPECT_NEAR_REL(fabs(accel), fabs(max_accel), rel_error);
     }
   }
 }
