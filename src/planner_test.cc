@@ -34,6 +34,8 @@ static void InitTestConfig(struct MachineControlConfig *c) {
   c->require_homing = false;
 }
 
+static inline double sqd(double x) { return x * x; }  // square a number
+
 class FakeMotorOperations : public SegmentQueue {
  public:
   FakeMotorOperations(const MachineControlConfig &config) : config_(config) {}
@@ -239,7 +241,8 @@ TEST(PlannerTest, SimpleMove_ReachesFullSpeed) {
 // overall speed to whatever the defining axis is. Which in our case would be:
 // the whole 1000mm segment would move with 10mm/s if Z is the dominant axis
 // (which they can - they often have many more steps/mm).
-
+// A similar reasoning applies to the acceleration as well.
+//
 // We set up two axis, one that can be very fast and one that is much slower.
 // Also, each of these can be a defining axis.
 //
@@ -257,11 +260,18 @@ static void parametrizedAxisClamping(GCodeParserAxis defining_axis,
   config->max_feedrate[AXIS_Y] =
     (AXIS_Y == slowAxis) ? kClampFeedrate : kClampFeedrate * kFastFactor;
 
+  // We set the slow axis acceleration to be kFastFactor times slower
+  const float kClampAcceleration = 100;
+  config->acceleration[AXIS_X] =
+    (AXIS_X == slowAxis) ? kClampAcceleration : kClampAcceleration * kFastFactor;
+  config->acceleration[AXIS_Y] =
+    (AXIS_Y == slowAxis) ? kClampAcceleration : kClampAcceleration * kFastFactor;
+
   // We want to force one of these to be the defining axis. Since both will
   // travel the same distance, we can achieve that by having one of the axis
   // reuire more steps/mm.
-  config->steps_per_mm[AXIS_X] = 1000;
-  config->steps_per_mm[AXIS_Y] = 1000;
+  config->steps_per_mm[AXIS_X] = 5000;
+  config->steps_per_mm[AXIS_Y] = 5000;
   config->steps_per_mm[defining_axis] *= 12.345;
 
   PlannerHarness plantest(0, 0, config);
@@ -281,21 +291,33 @@ static void parametrizedAxisClamping(GCodeParserAxis defining_axis,
   const LinearSegmentSteps &constant_speed_section = plantest.segments()[1];
   EXPECT_EQ(constant_speed_section.v0, constant_speed_section.v1);
 
+  const float slow_axis_ratio =
+    (float) constant_speed_section.steps[slowAxis] / constant_speed_section.steps[defining_axis];
+
   // Get the step speed of the axis we're interested in.
-  float step_speed_of_interest = constant_speed_section.v0 *
-                                 constant_speed_section.steps[slowAxis] /
-                                 constant_speed_section.steps[defining_axis];
+  float step_speed_of_interest = constant_speed_section.v0 * slow_axis_ratio;
+
+  // Get the acceleration segment accel.
+  const LinearSegmentSteps &constant_accel_section = plantest.segments()[0];
+  EXPECT_TRUE(constant_accel_section.v0 < constant_accel_section.v1);
+  const double step_accel_of_interest = (sqd(constant_accel_section.v1) - sqd(constant_accel_section.v0)) * slow_axis_ratio
+    / (2.0 * constant_accel_section.steps[defining_axis]);
+
   fprintf(stderr,
           "Defining axis: %c speed: defining %.1f ; "
-          "slow axis %c speed %.1f\n",
+          "slow axis %c speed %.1f, accel %.1f\n",
           gcodep_axis2letter(defining_axis), constant_speed_section.v0,
-          gcodep_axis2letter(slowAxis), step_speed_of_interest);
+          gcodep_axis2letter(slowAxis), step_speed_of_interest, step_accel_of_interest);
 
   // We have reached the maximum speed we can do. This is, because one of
   // our axes reached its maximum speed it can do. So we expect that axis
   // (the slow axis) to go at exactly the speed it is to be clamped to.
   EXPECT_FLOAT_EQ(kClampFeedrate * config->steps_per_mm[slowAxis],
                   step_speed_of_interest);
+
+  // Same for accel.
+  EXPECT_FLOAT_EQ(kClampAcceleration * config->steps_per_mm[slowAxis],
+                  step_accel_of_interest);
 }
 
 // We test all combinations of defining axis and which shall be the slow axis.
