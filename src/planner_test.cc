@@ -1,6 +1,7 @@
 /* -*- mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 #include "planner.h"
 
+#include <cstddef>
 #include <gtest/gtest.h>
 #include <math.h>
 #include <stdio.h>
@@ -18,6 +19,31 @@
 // Using different steps/mm speeds results in problems right now.
 // TODO: This should work being set to 1
 #define SPEED_STEP_FACTOR 4
+
+// Uniformly accelerated ramp distance estimation.
+// The ramp is parametrized by v0 as the starting speed, v1 the final speed
+// and the constant acceleration.
+static double travel_distance(double v0, double v1, double acceleration) {
+  return (v1 * v1 - v0 * v0) / (2 * acceleration);
+}
+
+// Uniformly accelerated ramp final speed estimation where
+// s is the travelled distance, v0 the starting speed and
+// acceleration is the constant acceleration.
+static double final_speed(double s, double v0, double acceleration) {
+  return std::sqrt(2 * acceleration * s + v0 * v0);
+}
+
+// Compute the distance for an acceleration ramp to cross a deceleration
+// ramp with the same module of the acceleration.
+static float find_speed_intersection(double v0, double v1, double acceleration, double distance) {
+  const double min_v = v0 <= v1 ? v0 : v1;
+  const double max_v = v0 <= v1 ? v1 : v0;
+  // Distance we would need to reach the maximum between the two speeds using the acceleration
+  // provided.
+  const double reaching_distance = travel_distance(min_v, max_v, acceleration);
+  return reaching_distance * (v0 < v1) + (distance - reaching_distance) / 2;
+}
 
 // Helper function for implementing ASSERT_NEAR.
 testing::AssertionResult DoubleNearAbsRelPredFormat(const char *expr1,
@@ -474,6 +500,18 @@ void testShallowAngleAllStartingPoints(float threshold, float testing_angle) {
   }
 }
 
+// Check the scenario in which we have two segment steps
+// at the same requested feedrate, but the acceleration is high
+// enough that the previous segment needs a forward pass as well.
+// Currently planned profile for an AxisTarget.
+//    |___________
+//    |   /¯\
+//    |  /   \ v2
+//    | /\    \
+// v0 |/__\____\_________
+//                       t
+TEST(PlannerTest, StraightLine_TwoSegmentsNeedsForwardPass) {}
+
 // Executing multiple short steps on a line should
 // should abide to the provided constraints.
 TEST(PlannerTest, StraightLine_LotsOfSteps) {
@@ -490,6 +528,73 @@ TEST(PlannerTest, StraightLine_LotsOfSteps) {
 
   for (const auto segment : plantest.segments())
     VerifySegmentConstraints(*config, segment);
+}
+
+// If the queue is empty and we flush it,
+// the outputs segments shoud be a symmetric profile. Either a
+// isosceles trapezoid or a triangle.
+TEST(PlannerTest, StraightLine_SingleSegment) {
+  MachineControlConfig *config = new MachineControlConfig;
+  // Let's set a really high speed. We don't care about the maximum feedrate.
+  // We are going to specify that anyways for each requested segment.
+  const int kMaxFeedrateSteps = 999999;
+  const int kMaxAccelerationSteps = 100;
+
+  // For this simple test we want to use a single axis.
+  const GCodeParserAxis axis = AXIS_X;
+  // Let's keep a 1to1 conversion rate
+  config->steps_per_mm[axis] = 1;
+  // We do different steps/mm to detect problems when going between
+  // euclidian space and step-space.
+  config->max_feedrate[axis] = kMaxFeedrateSteps;
+  config->acceleration[axis] = kMaxAccelerationSteps;  // mm/s^2
+  config->threshold_angle = 0;
+  config->speed_tune_angle = 0;
+  config->require_homing = false;
+
+  std::vector<LinearSegmentSteps> last_profile;
+
+  // Enqueue a target position.
+  {
+    PlannerHarness plantest(0, 0, config);
+    AxesRegister pos = {};
+    pos[AXIS_X] = 100;
+    plantest.Enqueue(pos, 100);
+
+    const auto &segments = plantest.segments();
+    const size_t num_segments = segments.size();
+    EXPECT_TRUE(num_segments > 0);
+    EXPECT_TRUE(segments[num_segments - 1].v1 == 0);
+    last_profile = segments;
+  }
+
+  // Enqueue it two times.
+  PlannerHarness plantest(0, 0, config);
+  AxesRegister pos = {};
+  pos[AXIS_X] = 100;
+  plantest.Enqueue(pos, 100);
+  pos[AXIS_X] *= 2;
+  plantest.Enqueue(pos, 100);
+
+  const auto &segments = plantest.segments();
+  const size_t num_segments = segments.size();
+  EXPECT_TRUE(num_segments > 0);
+  EXPECT_TRUE(segments[num_segments - 1].v1 == 0);
+
+  // Check that the original profile (with a single target position)
+  // should now be bigger than zero!
+  for (size_t i = 0; i < segments.size(); ++i) {
+    const LinearSegmentSteps &segment = segments[i];
+    if (i == 0) {
+      EXPECT_NEAR_REL(segment.v0, 0, 1e-3);
+      EXPECT_GE(segment.v1, 0);
+    } else if (i == segments.size() - 1) {
+      EXPECT_NEAR_REL(segment.v1, 0, 1e-3);
+      EXPECT_GE(segment.v0, 0);
+    } else {
+      EXPECT_GT(segment.v0, segment.v1);
+    }
+  }
 }
 
 // these tests don't work currently.
