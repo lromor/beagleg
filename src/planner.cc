@@ -18,7 +18,11 @@
  */
 #include "planner.h"
 
+#include <cstddef>
+#include <cstdio>
+#include <sstream>
 #include <stdlib.h>
+#include <iostream>
 
 #include <cmath>  // We use these functions as they work type-agnostic
 
@@ -51,6 +55,57 @@ struct AxisTarget {
   unsigned short aux_bits;             // Auxillary bits in this segment; set with M42
   double dx, dy, dz;                   // 3D delta_steps in real units (mm)
   double len;                          // 3D length (mm)
+
+  std::string ToString() const {
+    std::ostringstream ss;
+    ss << "{";
+    ss << "\"accel\":" << accel << ",";
+    ss << "\"speed\":" << speed << ",";
+    ss << "\"defining_axis\":" << defining_axis << ",";
+    ss << "\"position\":" << "[";
+    bool first = true;
+    for (const GCodeParserAxis a : AllAxes()) {
+      if (first) {
+        first = false;
+      } else {
+        ss << ",";
+      }
+      ss << position_steps[a];
+    }
+    ss << "]}";
+    return ss.str();
+  }
+};
+
+// Currently planned profile for an AxisTarget.
+//    |  v1
+//    |   /¯¯¯¯¯¯¯¯¯¯\
+//    |  /            \ v2
+//    | /
+// v0 |/________________
+//      acc  travel   dec
+struct PlannedProfile {
+  uint32_t accel, travel, decel; // Steps of the defining axis for each ramp
+  float v0, v1, v2; // Speed of the defining axis,
+  // v0-v1 accel, v1-v2 travel, v2-v3 decel.
+
+  // Return the total number of steps in the profile.
+  uint32_t TotalSteps() const {
+    return v0 + v1 + v2;
+  }
+
+  std::string ToString() const {
+    std::ostringstream ss;
+    ss << "{";
+    ss << "\"accel\":" << accel << ",";
+    ss << "\"travel\":" << travel << ",";
+    ss << "\"decel\":" << decel << ",";
+    ss << "\"v0\":" << v0 << ",";
+    ss << "\"v1\":" << v1 << ",";
+    ss << "\"v2\":" << v2;
+    ss << "}";
+    return ss.str();
+  }
 };
 }  // end anonymous namespace
 
@@ -141,19 +196,16 @@ class Planner::Impl {
 
   struct PlanningSegment {
     AxisTarget target;
+    PlannedProfile planned;
 
-    // Currently planned profile for an AxisTarget.
-    //    |  v1
-    //    |   /¯¯¯¯¯¯¯¯¯¯\
-    //    |  /            \ v2
-    //    | /
-    // v0 |/________________
-    //      acc  travel   dec
-    struct PlannedProfile {
-      uint32_t accel, travel, decel; // Steps of the defining axis for each ramp
-      float v0, v1, v2; // Speed of the defining axis,
-                            // v0-v1 accel, v1-v2 travel, v2-v3 decel.
-    } planned; // Planned segments
+    std::string ToString() const {
+      std::ostringstream ss;
+      ss << "{";
+      ss << "\"target\":" << target.ToString() << ",";
+      ss << "\"planned\":" << planned.ToString();
+      ss << "}";
+      return ss.str();
+    }
   };
 
   // Run backward and forward passes to
@@ -166,8 +218,6 @@ class Planner::Impl {
 
   // Initial speed point of the planning buffer in (steps/s)
   // for the defining axis of the first planning buffer segment.
-  double start_speed_; // Starting speed of the defining axis of the first Planning
-                       // Segment.
   int start_position_steps_[GCODE_NUM_AXES];  // Absolute starting position (steps)
 
   // Pre-calculated per axis limits in steps, steps/s, steps/s^2
@@ -318,7 +368,6 @@ Planner::Impl::Impl(const MachineControlConfig *config,
     : cfg_(config),
       hardware_mapping_(hardware_mapping),
       motor_ops_(motor_backend),
-      start_speed_(0),
       start_position_steps_{0},
       path_halted_(true),
       position_known_(true) {
@@ -361,6 +410,11 @@ double Planner::Impl::euclidian_speed(const struct AxisTarget *t) {
 bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue) {
   bool ret = true;
 
+  for (uint32_t i = 0; i < planning_buffer_.size(); ++i) {
+    const PlanningSegment *segment = planning_buffer_[0];
+    fprintf(stderr, "%s\n", segment->ToString().c_str());
+  }
+
   //NOTE(lromor)<continue>:
   // 1) find the deceleration ramp and the number of segments
   // you can push in the backend.
@@ -401,6 +455,8 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
     }
     planning_buffer_.pop_back();
   }
+
+  fprintf(stderr, "new planning buffer size: %u\n", planning_buffer_.size());
   return ret;
 }
 
@@ -507,51 +563,79 @@ void Planner::Impl::UpdateMotionProfile() {
 
   // Starting speed for each Planning segment.
   PlanningSegment *segment;
+  int buffer_index;
 
-  // Start with the final speed. It's always 0.
-  double next_speed = 0;
-  double previous_speed;
+  // Previous speed and next speed are respectively the end speed of the previous segment
+  // and the initial speed of the following segment computed on the original defining axis.
+  // We start from the backward pass. Next speed is always defined as the speed at the end
+  // of the segment both in forward and backward pass.
+  double speed = 0;
+  GCodeParserAxis defining_axis = planning_buffer_.back()->target.defining_axis;
+  PlannedProfile profile;
 
-  GCodeParserAxis previous_defining_axis = planning_buffer_.back()->target.defining_axis;
+  // NOTE: What we could do, is at each loop cycle, we care a planned segment
+  // struct filled with say travel-decel, and use some intersect thing that automatically
+  // finds if it intersects with another planned segment and if does, it updates one of the structs
+  // with the intersection or overrides it otherwise.
 
-  // Perform the backward pass. Compute and join the deceleration ramps
-  // (which, by running backward become acceleration ramps), and travel segments
-  // to the acceleration ramps or target feedrates.
-  for (int i = planning_buffer_.size() - 1; i >= 0; --i) {
+  // Perform the backward pass. Compute and join the deceleration and travel parts
+  // of the profile.
+  for (buffer_index = planning_buffer_.size() - 1; buffer_index >= 0; --buffer_index) {
     // Let's see how many steps are required to reach the target feedrate.
     // Since we are computing a deceleration ramp, the previous feedrate is v0
     // while the target feedrate is v.
-    segment = planning_buffer_[i];
+    segment = planning_buffer_[buffer_index];
+    assert(segment->target.speed > 0);
+    profile = {};
 
-    // Next speed is the speed of the defining axis next segment.
+    // Amount of absolute number of steps to be travelled in this segment
+    // by the defining axis.
+    const int delta_steps = abs(segment->target.delta_steps[segment->target.defining_axis]);
+
+    // next_speed is the speed of the next defining axis segment.
     // We want to have continuous speeds. We calculate what would be that speed
     // for the new defininx axis.
-    next_speed /= get_speed_factor_for_axis(&segment->target, previous_defining_axis);
+    const double segment_end_speed =
+      speed / get_speed_factor_for_axis(&segment->target, defining_axis);
 
-    if (i > 0) {
-      const PlanningSegment &previous_segment = *planning_buffer_[i - 1];
-      const GCodeParserAxis previous_defining_axis = previous_segment.target.defining_axis;
-      previous_speed = previous_segment.target.speed /
-        get_speed_factor_for_axis(&previous_segment.target, previous_defining_axis);
-    } else
-      previous_speed = start_speed_;
+    // Set the final planned speed as the segment end speed.
+    profile.v2 = segment_end_speed;
 
-    // Given the requested v0 and v2, compute a valid trapezoidal ramp.
-    //compute_trapezoidal_ramp(previous_speed, next_speed, segment);
-
-    // If the requested and computed v0 are matching, it means we successfully
-    // connected to the previous profile and from this
-    // segment forward, we start decelerating
-    // to zero. Let's save this index and stop.
-    if (segment->planned.v0 == previous_speed) {
-      //deceleration_ramp_start_ = i;
-      break;
+    // We can decelarate.
+    if (segment->target.speed > segment_end_speed) {
+      // Let's see if we can just fill the segment with a full decel ramp.
+      // This is the total space required to reach max speed.
+      const int steps_to_max_speed = uar_distance(segment_end_speed, segment->target.speed, segment->target.accel);
+      profile.decel = (steps_to_max_speed > delta_steps) \
+        ? delta_steps : steps_to_max_speed;
+      profile.v1 = uar_speed(segment->planned.decel, segment->planned.v2, segment->target.accel);
+      profile.travel = delta_steps - segment->planned.decel;
+    } else {
+      profile.v1 = segment->target.speed;
+      profile.travel = delta_steps;
     }
 
-    // Update variables.
-    previous_defining_axis = segment->target.defining_axis;
-    next_speed = segment->planned.v2;
+    // Check if we intersect with a previously planned segment.
+    // If we do, then we stop here. No need to compute the accel. It will happen in the forward pass.
+    // The new profile deceleration and travel will always be above or equal to the current profile.
+    // This will only then happen if the new backward profile v2 equals the previous planned profile v2.
+    if (segment->planned.v2 == profile.v2)
+      break;
+
+    // Update variables for next loop cycle.
+    defining_axis = segment->target.defining_axis;
+    speed = profile.v1;
   }
+
+  // NOTE: We are here
+  // Compute the forward pass
+  for (++buffer_index; buffer_index < planning_buffer_.size(); ++buffer_index) {
+    segment = planning_buffer_[buffer_index];
+
+    // Recompute the accel ramp if necessary.
+  }
+
+  // Done.
 }
 
 void Planner::Impl::GetCurrentPosition(AxesRegister *pos) {
