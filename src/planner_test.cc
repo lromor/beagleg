@@ -534,52 +534,64 @@ TEST(PlannerTest, StraightLine_LotsOfSteps) {
 // the outputs segments shoud be a symmetric profile. Either a
 // isosceles trapezoid or a triangle.
 TEST(PlannerTest, StraightLine_SingleSegment) {
-  MachineControlConfig *config = new MachineControlConfig;
+  MachineControlConfig *config = NULL;
   // Let's set a really high speed. We don't care about the maximum feedrate.
   // We are going to specify that anyways for each requested segment.
   const int kMaxFeedrateSteps = 999999;
   const int kMaxAccelerationSteps = 100;
+  const float kFeedrate = 500;
 
   // For this simple test we want to use a single axis.
   const GCodeParserAxis axis = AXIS_X;
-  // Let's keep a 1to1 conversion rate
+
+  std::vector<LinearSegmentSteps> last_profile;
+
+  // Enqueue a target position.
+  {
+    config = new MachineControlConfig;
+    // Let's keep a 1to1 conversion rate
+    config->steps_per_mm[axis] = 1;
+    // We do different steps/mm to detect problems when going between
+    // euclidian space and step-space.
+    config->max_feedrate[axis] = kMaxFeedrateSteps;
+    config->acceleration[axis] = kMaxAccelerationSteps;  // mm/s^2
+    config->threshold_angle = 0;
+    config->speed_tune_angle = 0;
+    config->require_homing = false;
+
+    PlannerHarness plantest(0, 0, config);
+    AxesRegister pos = {};
+    pos[AXIS_X] = 100;
+    plantest.Enqueue(pos, kFeedrate);
+
+    const auto &segments = plantest.segments();
+    const size_t num_segments = segments.size();
+    EXPECT_TRUE(num_segments > 0);
+    EXPECT_EQ(segments[num_segments - 1].v1, 0);
+    last_profile = segments;
+  }
+
+  config = new MachineControlConfig;
   config->steps_per_mm[axis] = 1;
-  // We do different steps/mm to detect problems when going between
-  // euclidian space and step-space.
   config->max_feedrate[axis] = kMaxFeedrateSteps;
   config->acceleration[axis] = kMaxAccelerationSteps;  // mm/s^2
   config->threshold_angle = 0;
   config->speed_tune_angle = 0;
   config->require_homing = false;
 
-  std::vector<LinearSegmentSteps> last_profile;
-
-  // Enqueue a target position.
-  {
-    PlannerHarness plantest(0, 0, config);
-    AxesRegister pos = {};
-    pos[AXIS_X] = 100;
-    plantest.Enqueue(pos, 100);
-
-    const auto &segments = plantest.segments();
-    const size_t num_segments = segments.size();
-    EXPECT_TRUE(num_segments > 0);
-    EXPECT_TRUE(segments[num_segments - 1].v1 == 0);
-    last_profile = segments;
-  }
-
   // Enqueue it two times.
   PlannerHarness plantest(0, 0, config);
   AxesRegister pos = {};
   pos[AXIS_X] = 100;
-  plantest.Enqueue(pos, 100);
+  plantest.Enqueue(pos, kFeedrate);
   pos[AXIS_X] *= 2;
-  plantest.Enqueue(pos, 100);
+  plantest.Enqueue(pos, kFeedrate);
 
   const auto &segments = plantest.segments();
+
   const size_t num_segments = segments.size();
   EXPECT_TRUE(num_segments > 0);
-  EXPECT_TRUE(segments[num_segments - 1].v1 == 0);
+  EXPECT_EQ(segments[num_segments - 1].v1, 0);
 
   // Check that the original profile (with a single target position)
   // should now be bigger than zero!

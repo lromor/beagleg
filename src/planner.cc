@@ -92,7 +92,7 @@ struct PlannedProfile {
 
   // Return the total number of steps in the profile.
   uint32_t TotalSteps() const {
-    return v0 + v1 + v2;
+    return accel + travel + decel;
   }
 
   std::string ToString() const {
@@ -226,8 +226,6 @@ class Planner::Impl {
   AxesRegister max_axis_speed_;  // max travel speed hz
   AxesRegister max_axis_accel_;  // acceleration hz/s
 
-  HardwareMapping::AuxBitmap last_aux_bits_;  // last enqueued aux bits.
-
   bool path_halted_;
   bool position_known_;
 };
@@ -248,44 +246,8 @@ static double get_speed_for_axis(const struct AxisTarget *target,
   return target->speed * get_speed_factor_for_axis(target, request_axis);
 }
 
-// Given that we want to travel "s" steps, start with speed "v0",
-// accelerate peak speed v1 and slow down to "v2" with acceleration "a",
-// what is v1 ?
-static double get_peak_speed(int s, double v0, double v2, double a) {
-  return std::sqrt(v2 * v2 + v0 * v0 + 2 * a * s) / std::sqrt(2.0);
-}
-
 static double euclid_distance(double x, double y, double z) {
   return std::sqrt(x * x + y * y + z * z);
-}
-
-// Number of steps to accelerate or decelerate (negative "a") from speed
-// v0 to speed v1. Modifies v1 if we can't reach the speed with the allocated
-// number of steps.
-static double steps_for_speed_change(double a, double v0, double *v1,
-                                     int max_steps) {
-  // s = v0 * t + a/2 * t^2
-  // v1 = v0 + a*t
-  const double t = (*v1 - v0) / a;
-  // TODO:
-  if (t < 0) Log_error("Error condition: t=%.1f INSUFFICIENT LOOKAHEAD\n", t);
-  double steps = a / 2 * t * t + v0 * t;
-  if (steps <= max_steps) return steps;
-  // Ok, we would need more steps than we have available. We correct the speed
-  // to what we actually can reach.
-  *v1 = std::sqrt(v0 * v0 + 2 * a * max_steps);
-  return max_steps;
-}
-
-// Returns true, if all results in zero movement
-static bool subtract_steps(struct LinearSegmentSteps *value,
-                           const struct LinearSegmentSteps &subtract) {
-  bool has_nonzero = false;
-  for (int i = 0; i < BEAGLEG_NUM_MOTORS; ++i) {
-    value->steps[i] -= subtract.steps[i];
-    has_nonzero |= (value->steps[i] != 0);
-  }
-  return has_nonzero;
 }
 
 static bool within_acceptable_range(double new_val, double old_val,
@@ -407,14 +369,9 @@ double Planner::Impl::euclidian_speed(const struct AxisTarget *t) {
 
 // Send the slots until we reach the final deceleration ramp.
 // The ramp can cover more than one segment.
-// Also cook LinearSegmentSteps and pop num_segments from the queue.
+// Also prepare LinearSegmentSteps and pop num_segments from the queue.
 bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue) {
   bool ret = true;
-
-  for (uint32_t i = 0; i < planning_buffer_.size(); ++i) {
-    const PlanningSegment *segment = planning_buffer_[0];
-    fprintf(stderr, "%s\n", segment->ToString().c_str());
-  }
 
   //NOTE(lromor)<continue>:
   // 1) find the deceleration ramp and the number of segments
@@ -425,7 +382,7 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
   // Flush the full queue.
   LinearSegmentSteps lss = {};
   for (uint32_t i = 0; i < num_segments; ++i) {
-    const PlanningSegment *segment = planning_buffer_.back();
+    const PlanningSegment *segment = planning_buffer_[0];
     lss.aux_bits = segment->target.aux_bits;
 
     // Accel
@@ -447,17 +404,16 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
     }
 
     // Decel
-    if (segment->planned.travel) {
+    if (segment->planned.decel) {
       for (const GCodeParserAxis a : AllAxes())
         assign_steps_to_motors(&lss, a, segment->planned.decel);
       lss.v0 = segment->planned.v1;
       lss.v1 = segment->planned.v2;
       motor_ops_->Enqueue(lss);
     }
-    planning_buffer_.pop_back();
+    planning_buffer_.pop_front();
   }
 
-  fprintf(stderr, "new planning buffer size: %u\n", planning_buffer_.size());
   return ret;
 }
 
@@ -545,6 +501,13 @@ bool Planner::Impl::machine_move(const AxesRegister &axis, float feedrate) {
   // redefine starting and final speeds.
   UpdateMotionProfile();
 
+#if PLANNER_DEBUG
+  for (uint32_t i = 0; i < planning_buffer_.size(); ++i) {
+    const PlanningSegment *segment = planning_buffer_[i];
+    fprintf(stderr, "%s\n", segment->ToString().c_str());
+  }
+#endif
+
   bool ret = issue_motor_move_if_possible();
   if (ret) path_halted_ = false;
   return ret;
@@ -564,7 +527,7 @@ void Planner::Impl::UpdateMotionProfile() {
 
   // Starting speed for each Planning segment.
   PlanningSegment *segment;
-  int buffer_index;
+  unsigned buffer_index;
 
   // Next speed is the initial speed of the following segment on the original defining axis.
   // We start from the backward pass.
@@ -573,7 +536,7 @@ void Planner::Impl::UpdateMotionProfile() {
 
   // Perform the backward pass. Compute and join the travel and deceleration parts
   // of the profile.
-  for (buffer_index = planning_buffer_.size() - 1; buffer_index >= 0; --buffer_index) {
+  for (buffer_index = planning_buffer_.size() - 1; buffer_index < planning_buffer_.size(); --buffer_index) {
     segment = planning_buffer_[buffer_index];
     assert(segment->target.speed > 0);
 
@@ -606,13 +569,15 @@ void Planner::Impl::UpdateMotionProfile() {
     // If we do, then we stop here. No need to compute the accel. It will happen in the forward pass.
     // The new profile deceleration and travel will always be above or equal to the current profile.
     // This will only then happen if the new backward profile v2 equals the previous planned profile v2.
-    if (segment->planned.v2 == segment_end_speed) {
+    if (segment->planned.v2 == segment_end_speed && buffer_index != planning_buffer_.size() - 1) {
       // The current segment doesn't need to be touched in the forward pass.
       // We increment the buffer index and keep _speed_ the same as it should already be the
       // v0 of the next segment defining axis.
       ++buffer_index;
       break;
     }
+    // Update the final speed.
+    segment->planned.v2 = segment_end_speed;
 
     // Update variables for next loop cycle.
     defining_axis = segment->target.defining_axis;
@@ -627,12 +592,13 @@ void Planner::Impl::UpdateMotionProfile() {
   }
 
   // Compute the forward pass
-  for (; buffer_index < planning_buffer_.size(); ++buffer_index) {
+  for (++buffer_index ; buffer_index < planning_buffer_.size(); ++buffer_index) {
     segment = planning_buffer_[buffer_index];
     const double segment_start_speed =
       speed / get_speed_factor_for_axis(&segment->target, defining_axis);
     defining_axis = segment->target.defining_axis;
 
+    std::cout << segment_start_speed << ", " << segment->planned.v1 << std::endl;
     // Recompute the accel ramp if necessary.
     // v1 should always be greater than zero (we always move).
     assert(segment->planned.v1 > 0);
@@ -645,6 +611,7 @@ void Planner::Impl::UpdateMotionProfile() {
       continue;
     }
 
+    // We have acceleration.
     const uint32_t steps = segment->planned.TotalSteps();
     const uint32_t steps_to_v1 = uar_distance(segment_start_speed, segment->planned.v1, segment->target.accel);
 
@@ -652,14 +619,19 @@ void Planner::Impl::UpdateMotionProfile() {
     if (steps_to_v1 <= segment->planned.travel) {
       segment->planned.v0 = segment_start_speed;
       segment->planned.accel = steps_to_v1;
+      segment->planned.travel = segment->planned.travel - steps_to_v1;
+      speed = segment->planned.v2;
       continue;
     }
 
+    // We don't intersect with travel.
+    segment->planned.travel = 0;
     const uint32_t steps_to_v2 = uar_distance(segment_start_speed, segment->planned.v2, segment->target.accel);
 
     // We do only accel and decel, no travel.
     if (steps_to_v2 <= steps) {
-      segment->planned.accel = find_uar_intersection(segment_start_speed, segment->planned.v2, segment->target.accel, steps) - segment->planned.decel;
+      segment->planned.accel = find_uar_intersection(segment_start_speed, segment->planned.v2, segment->target.accel, steps);
+      segment->planned.decel = steps - segment->planned.accel;
       segment->planned.v0 = segment_start_speed;
       segment->planned.v1 = uar_speed(segment->planned.accel, segment_start_speed, segment->target.accel);
       speed = segment->planned.v2;
