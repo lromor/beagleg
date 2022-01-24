@@ -21,6 +21,7 @@
 #include <bits/stdint-uintn.h>
 #include <cstddef>
 #include <cstdio>
+#include <math.h>
 #include <sstream>
 #include <stdlib.h>
 #include <iostream>
@@ -155,7 +156,7 @@ static double uar_speed(double s, double v0, double acceleration) {
 
 // Compute the distance for an acceleration ramp to cross a deceleration
 // ramp with the same module of the acceleration.
-static float find_uar_intersection(double v0, double v1, double acceleration, double distance) {
+static double find_uar_intersection(double v0, double v1, double acceleration, double distance) {
   const double min_v = v0 <= v1 ? v0 : v1;
   const double max_v = v0 <= v1 ? v1 : v0;
   // Distance we would need to reach the maximum between the two speeds using the acceleration
@@ -374,6 +375,9 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
   bool ret = true;
 
   //NOTE(lromor)<continue>:
+  // We need to change the other axes steps for accel travel decel. We have to be careful
+  // of having the right rounding but at the same time accel + travel + decel has to stay the same.
+
   // 1) find the deceleration ramp and the number of segments
   // you can push in the backend.
   const uint32_t num_segments = flush_planning_queue ? planning_buffer_.size() : 0;
@@ -501,13 +505,6 @@ bool Planner::Impl::machine_move(const AxesRegister &axis, float feedrate) {
   // redefine starting and final speeds.
   UpdateMotionProfile();
 
-#if PLANNER_DEBUG
-  for (uint32_t i = 0; i < planning_buffer_.size(); ++i) {
-    const PlanningSegment *segment = planning_buffer_[i];
-    fprintf(stderr, "%s\n", segment->ToString().c_str());
-  }
-#endif
-
   bool ret = issue_motor_move_if_possible();
   if (ret) path_halted_ = false;
   return ret;
@@ -598,7 +595,6 @@ void Planner::Impl::UpdateMotionProfile() {
       speed / get_speed_factor_for_axis(&segment->target, defining_axis);
     defining_axis = segment->target.defining_axis;
 
-    std::cout << segment_start_speed << ", " << segment->planned.v1 << std::endl;
     // Recompute the accel ramp if necessary.
     // v1 should always be greater than zero (we always move).
     assert(segment->planned.v1 > 0);
@@ -630,10 +626,22 @@ void Planner::Impl::UpdateMotionProfile() {
 
     // We do only accel and decel, no travel.
     if (steps_to_v2 <= steps) {
+      // NOTE(lromor): Here we are searching for the amount of steps at which two accel-decel profiles
+      // would converge. If this value ends up being very close to the end length of the segment,
+      // it means that we might have a single step dedicated to deceleration. Due to step discretization
+      // we have a rounding error that mighe undershoot or overshoot the actual joining speed for instance
+      // going below the final speed v2 or above v1. We fix this by casting to int and assuming that by doing
+      // so, the worst case scenario is the new v1 to go below v2. At that point we force v2 to be equal
+      // v1 and remove any other deceleration step.
       segment->planned.accel = find_uar_intersection(segment_start_speed, segment->planned.v2, segment->target.accel, steps);
+      segment->planned.v1 = uar_speed(segment->planned.accel, segment_start_speed, segment->target.accel);
+      if (segment->planned.v1 <= segment->planned.v2) {
+        segment->planned.v2 = segment->planned.v1;
+        segment->planned.accel = steps;
+      }
+
       segment->planned.decel = steps - segment->planned.accel;
       segment->planned.v0 = segment_start_speed;
-      segment->planned.v1 = uar_speed(segment->planned.accel, segment_start_speed, segment->target.accel);
       speed = segment->planned.v2;
       continue;
     }

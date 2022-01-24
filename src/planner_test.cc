@@ -20,31 +20,6 @@
 // TODO: This should work being set to 1
 #define SPEED_STEP_FACTOR 4
 
-// Uniformly accelerated ramp distance estimation.
-// The ramp is parametrized by v0 as the starting speed, v1 the final speed
-// and the constant acceleration.
-static double travel_distance(double v0, double v1, double acceleration) {
-  return (v1 * v1 - v0 * v0) / (2 * acceleration);
-}
-
-// Uniformly accelerated ramp final speed estimation where
-// s is the travelled distance, v0 the starting speed and
-// acceleration is the constant acceleration.
-static double final_speed(double s, double v0, double acceleration) {
-  return std::sqrt(2 * acceleration * s + v0 * v0);
-}
-
-// Compute the distance for an acceleration ramp to cross a deceleration
-// ramp with the same module of the acceleration.
-static float find_speed_intersection(double v0, double v1, double acceleration, double distance) {
-  const double min_v = v0 <= v1 ? v0 : v1;
-  const double max_v = v0 <= v1 ? v1 : v0;
-  // Distance we would need to reach the maximum between the two speeds using the acceleration
-  // provided.
-  const double reaching_distance = travel_distance(min_v, max_v, acceleration);
-  return reaching_distance * (v0 < v1) + (distance - reaching_distance) / 2;
-}
-
 // Helper function for implementing ASSERT_NEAR.
 testing::AssertionResult DoubleNearAbsRelPredFormat(const char *expr1,
                                                     const char *expr2,
@@ -91,7 +66,7 @@ class FakeMotorOperations : public SegmentQueue {
   FakeMotorOperations(const MachineControlConfig &config) : config_(config) {}
 
   bool Enqueue(const LinearSegmentSteps &segment) final {
-#if 0
+#if 1
     // Prepare for printing.
 
     // Let's convert the velocities into Euclidian space again.
@@ -114,9 +89,9 @@ class FakeMotorOperations : public SegmentQueue {
     // 'rounding_glitch'.
     fprintf(stderr, "  Receiving: (%6.1f, %6.1f, %6.1f); Euclid space: "
             "len: %5.1f ; v: %8.1f -> %8.1f %s %s",
-            euclidian_speeds.steps[AXIS_X] / config_.steps_per_mm[AXIS_X],
-            euclidian_speeds.steps[AXIS_Y] / config_.steps_per_mm[AXIS_Y],
-            euclidian_speeds.steps[AXIS_Z] / config_.steps_per_mm[AXIS_Z],
+            (config_.steps_per_mm[AXIS_X] != 0) ? euclidian_speeds.steps[AXIS_X] / config_.steps_per_mm[AXIS_X] : 0,
+            (config_.steps_per_mm[AXIS_Y] != 0) ? euclidian_speeds.steps[AXIS_Y] / config_.steps_per_mm[AXIS_Y] : 0,
+            (config_.steps_per_mm[AXIS_Z] != 0) ? euclidian_speeds.steps[AXIS_Z] / config_.steps_per_mm[AXIS_Z] : 0,
             hypotenuse,
             segment.v0, segment.v1,
             (segment.v0 < segment.v1) ? "accel" :
@@ -145,9 +120,9 @@ class FakeMotorOperations : public SegmentQueue {
   // Out of convenience, return back the length of the segment in euclid space
   float FixEuclidSpeed(LinearSegmentSteps *seg) {
     // Real world coordinates
-    const float dx = seg->steps[AXIS_X] / config_.steps_per_mm[AXIS_X];
-    const float dy = seg->steps[AXIS_Y] / config_.steps_per_mm[AXIS_Y];
-    const float dz = seg->steps[AXIS_Z] / config_.steps_per_mm[AXIS_Z];
+    const float dx = (config_.steps_per_mm[AXIS_X] != 0) ? seg->steps[AXIS_X] / config_.steps_per_mm[AXIS_X] : 0;
+    const float dy = (config_.steps_per_mm[AXIS_Y] != 0) ? seg->steps[AXIS_Y] / config_.steps_per_mm[AXIS_Y] : 0;
+    const float dz = (config_.steps_per_mm[AXIS_Z] != 0) ? seg->steps[AXIS_Z] / config_.steps_per_mm[AXIS_Z] : 0;
     const float hypotenuse = sqrtf(dx * dx + dy * dy + dz * dz);
     GCodeParserAxis defining_axis = AXIS_X;
     for (int i = AXIS_Y; i < AXIS_Z; ++i) {
