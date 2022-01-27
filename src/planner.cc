@@ -21,6 +21,7 @@
 #include <bits/stdint-uintn.h>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <math.h>
 #include <sstream>
 #include <stdlib.h>
@@ -216,7 +217,7 @@ class Planner::Impl {
 
   // Next buffered positions. Written by incoming gcode, read by outgoing
   // motor movements.
-  RingDeque<PlanningSegment, 256> planning_buffer_;
+  RingDeque<PlanningSegment, 4096> planning_buffer_;
 
   // Initial speed point of the planning buffer in (steps/s)
   // for the defining axis of the first planning buffer segment.
@@ -380,41 +381,72 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
 
   // 1) find the deceleration ramp and the number of segments
   // you can push in the backend.
-  const uint32_t num_segments = flush_planning_queue ? planning_buffer_.size() : 0;
+  uint32_t num_segments = planning_buffer_.size();
+  if (!flush_planning_queue) {
+    for (num_segments = planning_buffer_.size(); num_segments > 0; --num_segments) {
+      const PlanningSegment *segment = planning_buffer_[num_segments - 1];
+      if (segment->planned.decel != segment->planned.TotalSteps())
+        break;
+    }
+  }
 
   // 2) submit the segments
   // Flush the full queue.
-  LinearSegmentSteps lss = {};
+  struct LinearSegmentSteps accel_command = {};
+  struct LinearSegmentSteps move_command = {};
+  struct LinearSegmentSteps decel_command = {};
+
   for (uint32_t i = 0; i < num_segments; ++i) {
     const PlanningSegment *segment = planning_buffer_[0];
-    lss.aux_bits = segment->target.aux_bits;
+
+    memset(&move_command, 0, sizeof(move_command));
+    move_command.aux_bits = segment->target.aux_bits;
+    memcpy(&accel_command, &move_command, sizeof(accel_command));
+    memcpy(&decel_command, &move_command, sizeof(decel_command));
+
+    const unsigned defining_axis_steps = segment->planned.TotalSteps();
+    const double accel_fraction = (double) segment->planned.accel / defining_axis_steps;
+    const double decel_fraction = (double) segment->planned.decel / defining_axis_steps;
+
+    std::cout << segment->ToString() << std::endl;
 
     // Accel
     if (segment->planned.accel) {
-      for (const GCodeParserAxis a : AllAxes())
-        assign_steps_to_motors(&lss, a, segment->planned.accel);
-      lss.v0 = segment->planned.v0;
-      lss.v1 = segment->planned.v1;
-      motor_ops_->Enqueue(lss);
-    }
-
-    // Travel
-    if (segment->planned.travel) {
-      for (const GCodeParserAxis a : AllAxes())
-        assign_steps_to_motors(&lss, a, segment->planned.travel);
-      lss.v0 = segment->planned.v1;
-      lss.v1 = segment->planned.v1;
-      motor_ops_->Enqueue(lss);
+      for (const GCodeParserAxis a : AllAxes()) {
+         const int accel_steps = std::lround(accel_fraction * segment->target.delta_steps[a]);
+         assign_steps_to_motors(&accel_command, a, accel_steps);
+      }
+      accel_command.v0 = segment->planned.v0;
+      accel_command.v1 = segment->planned.v1;
     }
 
     // Decel
     if (segment->planned.decel) {
-      for (const GCodeParserAxis a : AllAxes())
-        assign_steps_to_motors(&lss, a, segment->planned.decel);
-      lss.v0 = segment->planned.v1;
-      lss.v1 = segment->planned.v2;
-      motor_ops_->Enqueue(lss);
+      for (const GCodeParserAxis a : AllAxes()) {
+         const int decel_steps = std::lround(decel_fraction * segment->target.delta_steps[a]);
+         assign_steps_to_motors(&decel_command, a, decel_steps);
+      }
+      decel_command.v0 = segment->planned.v1;
+      decel_command.v1 = segment->planned.v2;
     }
+
+    // Travel
+    for (const GCodeParserAxis a : AllAxes()) {
+      assign_steps_to_motors(&move_command, a,
+        segment->target.delta_steps[a] - accel_command.steps[a] - decel_command.steps[a]);
+    }
+    move_command.v0 = segment->planned.v1;
+    move_command.v1 = segment->planned.v1;
+
+    if (segment->planned.accel)
+      motor_ops_->Enqueue(accel_command);
+
+    if (segment->planned.travel)
+      motor_ops_->Enqueue(move_command);
+
+    if (segment->planned.decel)
+      motor_ops_->Enqueue(decel_command);
+
     planning_buffer_.pop_front();
   }
 
@@ -535,7 +567,10 @@ void Planner::Impl::UpdateMotionProfile() {
   // of the profile.
   for (buffer_index = planning_buffer_.size() - 1; buffer_index < planning_buffer_.size(); --buffer_index) {
     segment = planning_buffer_[buffer_index];
-    assert(segment->target.speed > 0);
+    if (segment->target.speed == 0) {
+      speed = 0;
+      continue;
+    }
 
     // Amount of absolute number of steps to be travelled in this segment
     // by the defining axis.
@@ -573,6 +608,7 @@ void Planner::Impl::UpdateMotionProfile() {
       ++buffer_index;
       break;
     }
+
     // Update the final speed.
     segment->planned.v2 = segment_end_speed;
 
@@ -596,8 +632,10 @@ void Planner::Impl::UpdateMotionProfile() {
     defining_axis = segment->target.defining_axis;
 
     // Recompute the accel ramp if necessary.
-    // v1 should always be greater than zero (we always move).
-    assert(segment->planned.v1 > 0);
+    if (segment->planned.v1 == 0) {
+      speed = 0;
+      continue;
+    }
 
     // Nothing to accelerate. Starting speed is above the travel speed.
     if (segment_start_speed >= segment->planned.v1) {
