@@ -18,13 +18,13 @@
  */
 #include "planner.h"
 
-#include <bits/stdint-uintn.h>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <math.h>
 #include <sstream>
-#include <stdlib.h>
 #include <iostream>
 
 #include <cmath>  // We use these functions as they work type-agnostic
