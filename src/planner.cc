@@ -36,7 +36,7 @@
 #include "hardware-mapping.h"
 #include "segment-queue.h"
 
-#define PLANNING_BUFFER_SIZE 64
+#define PLANNING_BUFFER_SIZE 1024
 
 namespace {
 // The target position vector is essentially a position in the
@@ -245,7 +245,7 @@ class Planner::Impl {
 static double get_speed_factor_for_axis(const struct AxisTarget *t,
                                         enum GCodeParserAxis request_axis) {
   if (t->delta_steps[t->defining_axis] == 0) return 0.0;
-  return (request_axis == t->defining_axis) ? 1.0 : 1.0 * t->delta_steps[request_axis] / t->delta_steps[t->defining_axis];
+  return (request_axis == t->defining_axis) ? 1.0 : 1.0 * fabs(t->delta_steps[request_axis] / t->delta_steps[t->defining_axis]);
 }
 
 // Get the speed for a particular axis. Depending on the direction, this can
@@ -393,6 +393,8 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
   if (!flush_planning_queue) {
     num_segments = 0;
   }
+
+#if 0
   // if (!flush_planning_queue) {
   //   for (num_segments = planning_buffer_.size(); num_segments > 0; --num_segments) {
   //     const PlanningSegment *segment = planning_buffer_[num_segments - 1];
@@ -403,11 +405,11 @@ bool Planner::Impl::issue_motor_move_if_possible(const bool flush_planning_queue
   //   }
   // }
 
-  // printf("\nTotal: %zu, tobpushed: %d, flush: %d\n", planning_buffer_.size(), num_segments, flush_planning_queue);
-  // for (unsigned i = 0; i < planning_buffer_.size(); ++i) {
-  //   printf("%s\n", planning_buffer_[i]->ToString().c_str());
-  // }
-  // printf("\n");
+  printf("\nTotal: %zu, to be pushed: %d, flush: %d\n", planning_buffer_.size(), num_segments, flush_planning_queue);
+  for (unsigned i = 0; i < planning_buffer_.size(); ++i) {
+    printf("%s\n", planning_buffer_[i]->ToString().c_str());
+  }
+#endif
 
   // We require a slot to be always present.
   if (num_segments == 0 && (planning_buffer_.size() == PLANNING_BUFFER_SIZE - 1))
@@ -643,6 +645,7 @@ void Planner::Impl::UpdateMotionProfile() {
       // Let's see if we can just fill the segment with a full decel ramp.
       // This is the total space required to reach max speed.
       const int steps_to_max_speed = uar_distance(segment_end_speed, segment->target.speed, segment->target.accel);
+
       segment->planned.decel = (steps_to_max_speed > delta_steps) \
         ? delta_steps : steps_to_max_speed;
       segment->planned.v1 = uar_speed(segment->planned.decel, segment_end_speed, segment->target.accel);
@@ -653,17 +656,17 @@ void Planner::Impl::UpdateMotionProfile() {
       segment->planned.v1 = segment->target.speed;
     }
 
-    // Let's reset the final speed always as v1. We want to keep a consistent profile
-    // state which means if no accel -> v0 == v1 and no decel -> v1 == v2.
-    segment->planned.v0 = segment->planned.v1;
-    segment->planned.accel = 0;
-
     // Update variables for next loop cycle.
     defining_axis = segment->target.defining_axis;
     // In the next iteration segment, our speed should be the final speed
     // which is the smallest between the highest speed we could reach or
     // the current segment start_speed.
-    speed = std::min(segment->planned.v0, segment->target.start_speed);
+    speed = (buffer_index) ? std::min(segment->planned.v1, segment->target.start_speed) : segment->planned.v0;
+
+    // Let's reset the final speed always as v1. We want to keep a consistent profile
+    // state which means if no accel -> v0 == v1 and no decel -> v1 == v2.
+    segment->planned.v0 = segment->planned.v1;
+    segment->planned.accel = 0;
   }
 
   // Compute the forward pass.
@@ -689,24 +692,22 @@ void Planner::Impl::UpdateMotionProfile() {
 
     // We have acceleration.
     const uint32_t steps = segment->planned.TotalSteps();
-    const uint32_t steps_to_v1 = uar_distance(segment_start_speed, segment->planned.v1, segment->target.accel);
-
+    const uint32_t steps_to_vmax = uar_distance(segment_start_speed, segment->planned.v1, segment->target.accel);
 
     // We intersect with the travel part.
-    if (steps_to_v1 <= segment->planned.travel) {
+    if (steps_to_vmax <= segment->planned.travel) {
       segment->planned.v0 = segment_start_speed;
-      segment->planned.accel = steps_to_v1;
-      segment->planned.travel = segment->planned.travel - steps_to_v1;
+      segment->planned.accel = steps_to_vmax;
+      segment->planned.travel = segment->planned.travel - steps_to_vmax;
       speed = segment->planned.v2;
       continue;
     }
 
     // We don't intersect with travel.
     segment->planned.travel = 0;
-    const uint32_t steps_to_v2 = uar_distance(segment_start_speed, segment->planned.v2, segment->target.accel);
 
     // We do only accel and decel, no travel.
-    if (steps_to_v2 <= steps) {
+    if (steps_to_vmax <= steps) {
       // NOTE(lromor): Here we are searching for the amount of steps at which two accel-decel profiles
       // would converge. If this value ends up being very close to the end length of the segment,
       // it means that we might have a single step dedicated to deceleration. Due to step discretization
