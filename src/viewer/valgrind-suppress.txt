@@ -1,0 +1,77 @@
+{
+   ignore_unversioned_libs
+   Memcheck:Leak
+   ...
+   obj:*/lib*/lib*.so
+}
+{
+   ignore_versioned_libs
+   Memcheck:Leak
+   ...
+   obj:*/lib*/lib*.so.*
+}
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Addr8
+   fun:strncmp
+   fun:is_dst
+   fun:_dl_dst_count
+   fun:expand_dynamic_string_token
+   fun:fillin_rpath.isra.0
+   fun:decompose_rpath
+   fun:cache_rpath
+   fun:cache_rpath
+   fun:_dl_map_object
+   fun:openaux
+   fun:_dl_catch_exception
+   fun:_dl_map_object_deps
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+}
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Addr8
+   fun:strncmp
+   fun:is_dst
+   fun:_dl_dst_substitute
+   fun:fillin_rpath.isra.0
+   fun:decompose_rpath
+   fun:cache_rpath
+   fun:cache_rpath
+   fun:_dl_map_object
+   fun:openaux
+   fun:_dl_catch_exception
+   fun:_dl_map_object_deps
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+}
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Free
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan.so.1.2.153
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan.so.1.2.153
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan.so.1.2.153
+   fun:vkCreateDevice
+   fun:createDeviceUnique<>
+   fun:_Z12CreateDeviceN2vk14PhysicalDeviceEjRKSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS7_EEPKNS_22PhysicalDeviceFeaturesEPKvf
+   fun:_ZN5space4core10InitVulkanENS0_11VkAppConfigEP9_XDisplaym
+   fun:main
+}
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Free
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so
+   fun:vkAllocateCommandBuffers
+   fun:allocateCommandBuffersUnique<>
+   fun:_ZN5Scene22CreateSwapChainContextEv
+   fun:_ZN5Scene4InitEv
+   fun:main
+}
