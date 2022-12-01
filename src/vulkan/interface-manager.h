@@ -2,23 +2,20 @@
 #define __INTERFACE_MANAGER_H_
 
 #include <X11/Xlib.h>
-#include "scene.h"
-#include "input/xinput2.h"
-#include "input/gamepad.h"
+#include "xinput2.h"
+#include "gamepad.h"
 #include "camera.h"
 
 class InterfaceManager {
 public:
   InterfaceManager(Display *display, Window window,
-                   Scene *scene, Camera *camera,
-                   XInput2 *xinput2, Gamepad *gamepad);
+                   Camera *camera, XInput2 *xinput2, Gamepad *gamepad);
 
   bool Exit() { return exit_; }
 
 private:
   Display *display_;
   Window window_;
-  Scene *scene_;
   Camera *camera_;
   XInput2 *xinput2_;
   Gamepad *gamepad_;

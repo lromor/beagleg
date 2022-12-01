@@ -1,0 +1,89 @@
+# (c) 2013 h.zeller@acm.org
+# This is free software. License: GNU 3.0
+
+# Where the google test source has been unpacked.
+# You also can check out from head in https://github.com/google/googletest and
+# point to the googletest/ and googlemock/ directories.
+GTEST_SOURCE?=/usr/src/googletest/googletest
+GMOCK_SOURCE?=/usr/src/googletest/googlemock
+
+# In particular, if this is a checked out version of google test/mock, this
+# makes sure that we see the right includes.
+GTEST_INCLUDE=-I$(GTEST_SOURCE)/include -I$(GMOCK_SOURCE)/include
+
+# Optmization flags. Typically, that should be -O3 for regluar use, but for
+# debugging and development "-g -O0" can be more helpful. Overridable by
+# environment variable.
+BEAGLEG_OPT_CFLAGS?=-O3
+
+CFLAGS+=-Wall -Wextra -W -Wno-unused-parameter -D_XOPEN_SOURCE=500 $(ARM_COMPILE_FLAGS) $(BEAGLEG_OPT_CFLAGS) -I$(shell pwd)/..
+CFLAGS+=-DVK_USE_PLATFORM_XLIB_KHR -DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+CFLAGS+=-I/usr/include/libevdev-1.0 -DNDEBUG
+
+CXXFLAGS+=-std=c++17 $(CFLAGS)
+CXX?=g++
+
+LDFLAGS+=-lpthread -lm
+
+COMMON_LIBS=../common/libbeaglegbase.a
+
+OBJECTS=scene.o xinput2.o vulkan-core.o
+
+GENLIB=libvulkan.a
+
+UNITTEST_BINARIES=
+TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
+
+DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
+
+all : $(GENLIB)
+
+$(GENLIB): $(OBJECTS)
+	$(AR) rcs $@ $^
+
+../common/libbeaglegbase.a:
+	$(MAKE) -C ../common
+
+test-binaries: $(UNITTEST_BINARIES)
+
+test: test-binaries
+	for test_bin in $(UNITTEST_BINARIES) ; do echo ; echo $$test_bin; ./$$test_bin || exit 1 ; done
+
+valgrind-test: test-binaries
+	for test_bin in $(UNITTEST_BINARIES) ; do valgrind --track-origins=yes --leak-check=full --error-exitcode=1 -q ./$$test_bin || exit 1; done
+
+
+%_test: %_test.o $(GENLIB) $(COMMON_LIBS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
+	$(CROSS_COMPILE)$(CXX) -o $@ $< $(GENLIB) $(COMMON_LIBS) $(TEST_FRAMEWORK_OBJECTS) $(LDFLAGS)
+
+%.o: %.cc shaders compiler-flags
+	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
+	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
+
+%_test.o: %_test.cc compiler-flags
+	$(CROSS_COMPILE)$(CXX)  $(GTEST_INCLUDE) -Wno-inconsistent-missing-override $(CXXFLAGS) -c  $< -o $@
+	@$(CROSS_COMPILE)$(CXX) $(GTEST_INCLUDE) $(CXXFLAGS) -MM $< > $@.d
+
+# Auto generated dependencies
+-include $(DEPENDENCY_RULES)
+
+# Test and Mock framework.
+gtest-all.o : $(GTEST_SOURCE)/src/gtest-all.cc compiler-flags
+	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE) -I$(GTEST_SOURCE) -I$(GTEST_SOURCE)/include -c  $< -o $@
+
+gmock-all.o : $(GMOCK_SOURCE)/src/gmock-all.cc compiler-flags
+	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE) -I$(GMOCK_SOURCE) -I$(GMOCK_SOURCE)/include -c  $< -o $@
+
+clean:
+	rm -rf $(GENLIB) $(OBJECTS) $(UNITTEST_BINARIES) $(UNITTEST_BINARIES:=.o) $(DEPENDENCY_RULES) $(TEST_FRAMEWORK_OBJECTS) *.gcda *.gcov *.gcno *.cc.html *.h.html
+	$(MAKE) -C shaders clean
+
+compiler-flags: FORCE
+	@echo '$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE)' | cmp -s - $@ || echo '$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE)' > $@
+
+.SECONDARY: $(UNITTEST_BINARIES:=.o)
+
+shaders: FORCE
+	$(MAKE) -C shaders/
+
+.PHONY: FORCE

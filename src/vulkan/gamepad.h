@@ -59,7 +59,7 @@ public:
   static std::unique_ptr<Gamepad> Create(const std::string &path);
 
   // Useful if you want to use select() or poll() and then call ReadEvent()
-  const int GetFd();
+  int GetFd();
 
   typedef std::function<void(const struct EventData &data)> EventCallback;
   void SetEventCallback(const EventCallback &clbk);

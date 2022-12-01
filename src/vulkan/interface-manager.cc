@@ -8,9 +8,9 @@
 
 
 InterfaceManager::InterfaceManager(Display *display, Window window,
-                                   Scene *scene, Camera *camera, XInput2 *xinput2,
+                                   Camera *camera, XInput2 *xinput2,
                                    Gamepad *gamepad)
-  : display_(display), window_(window), scene_(scene),
+  : display_(display), window_(window),
     camera_(camera), xinput2_(xinput2), gamepad_(gamepad),
     mouse_state_(0), exit_(false) {
 

@@ -46,7 +46,7 @@ public:
   void GetModifierKeys() {}
 
   // Same FD as the original display connection.
-  const int GetFd() { return XConnectionNumber(display_); }
+  int GetFd() { return XConnectionNumber(display_); }
 
   // Read an xlib event.
   void ReadEvents(XEvent event);

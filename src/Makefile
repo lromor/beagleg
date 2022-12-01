@@ -55,9 +55,9 @@ CFLAGS+=-Wall -Wextra -W -Wno-unused-parameter -I$(shell pwd) -I$(INCDIR_APP_LOA
 CXXFLAGS+=-std=c++17 $(CFLAGS) $(CONFIG_FLAGS)
 CXX?=g++
 
-LDFLAGS+=-lpthread -lm
+LDFLAGS+=-lpthread -lm -lvulkan -lX11 -lXi -levdev -ldl
 PRUSS_LIBS=$(LIBDIR_APP_LOADER)/libprussdrv.a
-COMMON_LIBS=common/libbeaglegbase.a gcode-parser/libgcodeparser.a
+COMMON_LIBS=common/libbeaglegbase.a gcode-parser/libgcodeparser.a vulkan/libvulkan.a
 SUBDIRS=common gcode-parser
 
 # Assembled binary from *.p file.
@@ -81,6 +81,9 @@ all : $(TARGETS)
 
 common/libbeaglegbase.a: FORCE
 	$(MAKE) -C common
+
+vulkan/libvulkan.a: FORCE
+	$(MAKE) -C vulkan
 
 gcode-parser/libgcodeparser.a: FORCE
 	$(MAKE) -C gcode-parser
@@ -166,6 +169,7 @@ clean:
 	rm -rf $(TARGETS) $(MAIN_OBJECTS) $(OBJECTS) $(PRU_BIN) $(UNITTEST_BINARIES) $(UNITTEST_BINARIES:=.o) $(DEPENDENCY_RULES) $(TEST_FRAMEWORK_OBJECTS) hershey.o *.gcda *.gcov *.gcno *.cc.gcov.html *.h.gcov.html *.func.html
 	$(MAKE) -C common clean
 	$(MAKE) -C gcode-parser clean
+	$(MAKE) -C vulkan clean
 
 dist-clean: clean
 	make -C $(AM335_BASE) clean

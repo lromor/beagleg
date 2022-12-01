@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <thread>
 #include <memory>
 
 #include "common/fd-mux.h"
@@ -52,6 +53,7 @@
 #include "sim-audio-out.h"
 #include "sim-firmware.h"
 #include "spindle-control.h"
+#include "vulkan/scene.h"
 
 static int usage(const char *prog, const char *msg) {
   if (msg) {
@@ -61,49 +63,35 @@ static int usage(const char *prog, const char *msg) {
           "Usage: %s [options] [<gcode-filename>]\n"
           "Options:\n",
           prog);
-  fprintf(
-    stderr,
-    "  -c, --config <config-file> : Configuration file. (Required)\n"
-    "  -p, --port <port>          : Listen on this TCP port for GCode.\n"
-    "  -b, --bind-addr <bind-ip>  : Bind to this IP (Default: 0.0.0.0).\n"
-    "  -l, --logfile <logfile>    : Logfile to use. If empty, messages go to "
-    "syslog (Default: /dev/stderr).\n"
-    "      --param <paramfile>    : Parameter file to use.\n"
-    "  -d, --daemon               : Run as daemon.\n"
-    "      --priv <uid>[:<gid>]   : After opening GPIO: drop privileges to "
-    "this (default: daemon:daemon)\n"
-    "      --help                 : Display this help text and exit.\n"
-    "\nMostly for testing and debugging:\n"
-    "  -f <factor>                : Feedrate speed factor (Default 1.0).\n"
-    "  -n                         : Dryrun; don't send to motors, no GPIO or "
-    "PRU needed (Default: off).\n"
-    // -N dry-run with simulation output; mostly for development, so not
-    // mentioned here. -W <wav-file>  dry run for development: output wav
-    // file.
-    "  -P                         : Verbose: Show some more debug output "
-    "(Default: off).\n"
-    "  -S                         : Synchronous: don't queue (Default: "
-    "off).\n"
-    "      --allow-m111           : Allow changing the debug level with M111 "
-    "(Default: off).\n"
-    "\nSegment acceleration tuning:\n"
-    "     --threshold-angle       : Specifies the threshold angle used for "
-    "segment acceleration (Default: 10 degrees).\n"
-    "     --speed-tune-angle      : Specifies the angle used for "
-    "proportional "
-    "speed-tuning. (Default: 60 degrees)\n\n"
-    "                               The --threshold-angle + "
-    "--speed-tune-angle "
-    "must be less than 90 degrees.\n"
-    "\nConfiguration file overrides:\n"
-    "     --homing-required       : Require homing before any moves "
-    "(require-homing = yes).\n"
-    "     --nohoming-required     : (Opposite of above^): Don't require "
-    "homing "
-    "before any moves (require-homing = no).\n"
-    "     --norange-check         : Disable machine limit checks. "
-    "(range-check "
-    "= no).\n");
+  fprintf(stderr,
+          R"(  -c, --config <config-file> : Configuration file. (Required)
+  -p, --port <port>          : Listen on this TCP port for GCode.
+  -b, --bind-addr <bind-ip>  : Bind to this IP (Default: 0.0.0.0).
+  -l, --logfile <logfile>    : Logfile to use. If empty, messages go to syslog (Default: /dev/stderr).
+      --param <paramfile>    : Parameter file to use.
+  -d, --daemon               : Run as daemon.
+      --priv <uid>[:<gid>]   : After opening GPIO: drop privileges to this (default: daemon:daemon)
+      --help                 : Display this help text and exit.
+
+Mostly for testing and debugging:
+  -f <factor>                : Feedrate speed factor (Default 1.0).
+  -n                         : Dryrun; don't send to motors, no GPIO or PRU needed (Default: off).
+  -P                         : Verbose: Show some more debug output (Default: off).
+  -S                         : Synchronous: don't queue (Default: off).
+      --allow-m111           : Allow changing the debug level with M111 (Default: off).
+
+Segment acceleration tuning:
+     --threshold-angle       : Specifies the threshold angle used for segment acceleration (Default: 10 degrees).
+     --speed-tune-angle      : Specifies the angle used for proportional speed-tuning. (Default: 60 degrees)
+
+                               The --threshold-angle + --speed-tune-angle must be less than 90 degrees.
+
+Configuration file overrides:
+     --homing-required       : Require homing before any moves (require-homing = yes).
+     --nohoming-required     : (Opposite of above^): Don't require homing before any moves (require-homing = no).
+     --norange-check         : Disable machine limit checks. (range-check = no).
+     --vulkan                : Send to 3d renderer.
+)");
   return 1;
 }
 
@@ -337,6 +325,7 @@ int main(int argc, char *argv[]) {
   MachineControlConfig config;
   bool dry_run = false;
   bool simulation_output = false;
+  bool vulkan_output = false;
   const char *logfile = NULL;
   std::string paramfile;
   const char *config_file = NULL;
@@ -356,7 +345,8 @@ int main(int argc, char *argv[]) {
     OPT_PRIVS,
     OPT_ENABLE_M111,
     OPT_PARAM_FILE,
-    OPT_STATUS_SERVER
+    OPT_STATUS_SERVER,
+    OPT_VULKAN,
   };
 
   // clang-format off
@@ -381,6 +371,7 @@ int main(int argc, char *argv[]) {
     { "priv",               required_argument, NULL, OPT_PRIVS },
     { "allow-m111",         no_argument,       NULL, OPT_ENABLE_M111 },
     { "status-server",      required_argument, NULL, OPT_STATUS_SERVER },
+    { "vulkan",             no_argument, NULL, OPT_VULKAN },
 
     // Not yet mentioned in --help. Possibly rarely useful.
     { "noack-ok",           no_argument,       NULL, OPT_DISABLE_ACK_OK },
@@ -440,6 +431,7 @@ int main(int argc, char *argv[]) {
       break;
     case 'p': listen_port = atoi(optarg); break;
     case OPT_STATUS_SERVER: status_server_port = atoi(optarg); break;
+    case OPT_VULKAN: vulkan_output = true; break;
     case 'b': bind_addr = strdup(optarg); break;  // NOLINT: leak ok.
     case 'l': logfile = strdup(optarg); break;    // NOLINT: leak ok.
     case OPT_PARAM_FILE: paramfile = MakeAbsoluteFile(optarg); break;
@@ -566,6 +558,19 @@ int main(int argc, char *argv[]) {
         new SimFirmwareQueue(stdout, 3);  // TODO: derive from cfg
     } else if (wav_output) {
       motion_backend = new SimFirmwareAudioQueue(wav_output);
+    } else if (vulkan_output) {
+      // To avoid messing up with the event server loop
+      // idle timer, we run our rendering pipeline on a secondary thread.
+      VulkanScene *vulkan_scene = VulkanScene::Create(&event_server);
+      if (vulkan_scene == NULL) {
+        Log_error("Exiting. Cannot initialize the vulkan scene.");
+      }
+      std::thread thread([&](){
+        vulkan_scene.Loop();
+      });
+      thread.detach();
+      //motion_backend = vulkan_scene->GetSimFirmwareRenderingQueue();
+      motion_backend = new DummyMotionQueue();
     } else {
       motion_backend = new DummyMotionQueue();
     }
@@ -579,7 +584,6 @@ int main(int argc, char *argv[]) {
     pru_hw_interface = new UioPrussInterface();
     motion_backend = new PRUMotionQueue(&hardware_mapping, pru_hw_interface);
   }
-
   // Listen port bound, GPIO initialized. Ready to drop privileges.
   if (geteuid() == 0 && strlen(privs) > 0) {
     if (drop_privileges(privs)) {

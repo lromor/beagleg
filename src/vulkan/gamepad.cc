@@ -160,7 +160,7 @@ void Gamepad::Impl::ReadEvents() {
   }
 }
 
-const int Gamepad::GetFd() { return impl_->GetFd(); }
+int Gamepad::GetFd() { return impl_->GetFd(); }
 
 void Gamepad::SetEventCallback(const EventCallback &clbk) {
   return impl_->SetEventCallback(clbk);
